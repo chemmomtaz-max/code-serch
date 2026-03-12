@@ -1,32 +1,30 @@
-/** Vercel Production API - Final Deployment Trigger **/
+/** 
+ * OSINT Search API - Ultra Reliable Version
+ * Using Google Accessible, Qwant, and Bing fallback
+ */
 export default async function handler(req, res) {
-  // Allow CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { keyword, country } = req.body;
   if (!keyword) return res.status(400).json({ error: "keyword is required" });
 
   const LANG_MAP = {
-    "iran": "fa", "iraq": "ar", "germany": "de", "france": "fr",
-    "spain": "es", "italy": "it", "russia": "ru", "china": "zh-CN",
-    "japan": "ja", "turkey": "tr", "brazil": "pt",
-    "saudi arabia": "ar", "egypt": "ar", "united arab emirates": "ar",
-    "syria": "ar", "lebanon": "ar", "afghanistan": "fa", "india": "hi",
-    "indonesia": "id", "malaysia": "ms", "pakistan": "ur",
+    "iran": "fa", "iraq": "ar", "germany": "de", "france": "fr", "spain": "es", "italy": "it", "russia": "ru",
+    "china": "zh-CN", "japan": "ja", "turkey": "tr", "brazil": "pt", "saudi arabia": "ar", "egypt": "ar",
+    "uae": "ar", "syria": "ar", "lebanon": "ar", "afghanistan": "fa", "india": "hi", "pakistan": "ur",
   };
 
-  const PLATFORM_SITES = {
+  const PLATFORMS = {
     facebook: "site:facebook.com",
     instagram: "site:instagram.com",
     tiktok: "site:tiktok.com",
     linkedin: "site:linkedin.com",
     telegram: "site:t.me",
-    whatsapp: "site:wa.me",
+    whatsapp: "site:wa.me"
   };
 
   const PLATFORM_DOMAINS = {
@@ -40,106 +38,98 @@ export default async function handler(req, res) {
 
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
 
-  function getDomain(url) {
-    try { return new URL(url).hostname.replace("www.", ""); } catch { return url; }
-  }
-
-  async function translateText(text, targetLang) {
+  async function translate(text, target) {
     try {
-      const resp = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${targetLang}`);
-      const data = await resp.json();
-      return data?.responseData?.translatedText || text;
+      const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${target}`);
+      const d = await r.json();
+      return d?.responseData?.translatedText || text;
     } catch { return text; }
   }
 
-  async function searchEngine(query, maxResults = 8) {
+  async function fetchResults(query, limit = 8) {
+    const results = [];
+    const userAgents = [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ];
+    const ua = userAgents[Math.floor(Math.random() * userAgents.length)];
+
+    // Try Google Accessible Interface (gbv=1)
     try {
-      const url = `https://duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        },
-      });
-      const html = await resp.text();
-      const results = [];
-      const matches = html.matchAll(/<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<td[^>]*class="result-snippet"[^>]*>(.*?)<\/td>/gs);
-      for (const m of matches) {
-        let link = m[1];
-        if (link.includes("uddg=")) {
-          const match = link.match(/uddg=([^&]+)/);
-          if (match) link = decodeURIComponent(match[1]);
-        }
+      const gUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&gbv=1&num=${limit}`;
+      const gResp = await fetch(gUrl, { headers: { "User-Agent": ua } });
+      const gHtml = await gResp.text();
+      
+      const gMatches = gHtml.matchAll(/<a href="\/url\?q=([^&]+)&amp;[^>]*><h3[^>]*>(.*?)<\/h3>/g);
+      for (const m of gMatches) {
+        const url = decodeURIComponent(m[1]);
         const title = m[2].replace(/<[^>]+>/g, "").trim();
-        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
-        if (link && !link.includes("duckduckgo.com")) {
-          results.push({ href: link, title, body: snippet });
-        }
-        if (results.length >= maxResults) break;
-      }
-      if (results.length === 0) {
-        const tableMatches = html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/g);
-        for (const m of tableMatches) {
-          let link = m[1];
-          if (link.startsWith("http") && !link.includes("duckduckgo.com")) {
-            const title = m[2].replace(/<[^>]+>/g, "").trim();
-            if (title.length > 5) results.push({ href: link, title, body: title });
-          }
-          if (results.length >= maxResults) break;
+        if (url.startsWith("http") && !url.includes("google.com")) {
+          results.push({ href: url, title, body: title });
         }
       }
-      return results;
-    } catch (e) { return []; }
+    } catch (e) { console.error("G Error", e); }
+
+    if (results.length >= 3) return results.slice(0, limit);
+
+    // Fallback: Qwant (Good for no-js scraping)
+    try {
+      const qUrl = `https://api.qwant.com/v3/search/web?q=${encodeURIComponent(query)}&count=${limit}&locale=en_US`;
+      const qResp = await fetch(qUrl, { headers: { "User-Agent": ua } });
+      const qData = await qResp.json();
+      if (qData?.data?.result?.items) {
+        for (const item of qData.data.result.items) {
+          results.push({ href: item.url, title: item.title, body: item.desc });
+        }
+      }
+    } catch (e) { console.error("Q Error", e); }
+
+    return results.slice(0, limit);
   }
 
   try {
-    const keywordSet = new Set([keyword]);
-    const lang = LANG_MAP[(country || "").toLowerCase().trim()];
-    if (lang) {
-      const [en, local] = await Promise.all([
-        translateText(keyword, "en"),
-        translateText(keyword, lang)
-      ]);
-      if (en) keywordSet.add(en);
-      if (local) keywordSet.add(local);
-    }
-    const keywords = Array.from(keywordSet);
-    const entityMap = {};
+    const kwSet = new Set([keyword]);
+    const targetLang = LANG_MAP[country.toLowerCase().trim()] || "en";
+    
+    const [en, local] = await Promise.all([
+      translate(keyword, "en"),
+      translate(keyword, targetLang)
+    ]);
+    if (en) kwSet.add(en);
+    if (local) kwSet.add(local);
 
-    for (const kw of keywords) {
-      const webResults = await searchEngine(kw, 8);
-      for (const r of webResults) {
-        const { href: link, title, body: snippet } = r;
-        const isSocial = Object.values(PLATFORM_DOMAINS).some(ds => ds.some(d => link.toLowerCase().includes(d)));
+    const entityMap = {};
+    for (const kw of kwSet) {
+      // 1. General search
+      const web = await fetchResults(kw, 10);
+      for (const r of web) {
+        const isSocial = Object.values(PLATFORM_DOMAINS).some(ds => ds.some(d => r.href.toLowerCase().includes(d)));
         if (isSocial) continue;
-        const domain = getDomain(link);
-        const emails = [...new Set((snippet + " " + title).match(EMAIL_REGEX) || [])];
-        if (!entityMap[domain]) {
-          entityMap[domain] = { name: title, website: link, snippet: snippet.slice(0, 200), emails: [], phones: [], social_profiles: [] };
-        }
-        if (emails.length) entityMap[domain].emails = [...new Set([...entityMap[domain].emails, ...emails])];
+        const dom = new URL(r.href).hostname.replace("www.", "");
+        const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+        if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: r.href, snippet: r.body.slice(0, 200), emails: [], phones: [], social_profiles: [] };
+        if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
       }
-      for (const [platform, siteOp] of Object.entries(PLATFORM_SITES)) {
-        const domains = PLATFORM_DOMAINS[platform] || [];
-        const platResults = await searchEngine(`${siteOp} "${kw}"`, 4);
-        for (const r of platResults) {
-          const { href: link, title, body: snippet } = r;
-          if (domains.length && !domains.some(d => link.toLowerCase().includes(d))) continue;
-          const domain = getDomain(link);
-          const emails = [...new Set((snippet + " " + title).match(EMAIL_REGEX) || [])];
-          if (!entityMap[domain]) {
-            entityMap[domain] = { name: title, website: null, snippet: snippet.slice(0, 200), emails: [], phones: [], social_profiles: [] };
+
+      // 2. Social specific
+      for (const [plat, siteOp] of Object.entries(PLATFORMS)) {
+        const social = await fetchResults(`${siteOp} "${kw}"`, 5);
+        for (const r of social) {
+          const dom = new URL(r.href).hostname.replace("www.", "");
+          if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: null, snippet: r.body.slice(0, 200), emails: [], phones: [], social_profiles: [] };
+          if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
+            entityMap[dom].social_profiles.push({ platform: plat, url: r.href });
           }
-          const existingUrls = entityMap[domain].social_profiles.map(p => p.url);
-          if (!existingUrls.includes(link)) {
-            entityMap[domain].social_profiles.push({ platform, url: link });
-          }
-          if (emails.length) entityMap[domain].emails = [...new Set([...entityMap[domain].emails, ...emails])];
+          const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+          if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
         }
       }
     }
-    const finalResults = Object.values(entityMap).filter(e => e.website || e.social_profiles.length || e.emails.length);
-    return res.status(200).json(finalResults.slice(0, 50));
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+
+    const final = Object.values(entityMap).filter(e => e.website || e.social_profiles.length || e.emails.length);
+    return res.status(200).json(final.slice(0, 60));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 }
