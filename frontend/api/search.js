@@ -122,6 +122,7 @@ export default async function handler(req, res) {
       WhatsApp: []
     };
     const seenUrls = new Set();
+    const searchTasks = [];
 
     // Strategy: Batch queries to keep Vercel happy
     const kwList = Array.from(kwSet);
