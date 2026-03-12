@@ -96,7 +96,14 @@ export default async function handler(req, res) {
     if (local) kwSet.add(local);
 
     const categories = {
-      Web: [], Facebook: [], Instagram: [], TikTok: [], LinkedIn: [], Twitter: [], Telegram: [], WhatsApp: []
+      Web: [], 
+      Facebook: [], 
+      Instagram: [], 
+      TikTok: [], 
+      LinkedIn: [], 
+      Twitter: [], 
+      Telegram: [], 
+      WhatsApp: []
     };
     const seenUrls = new Set();
 
@@ -105,15 +112,19 @@ export default async function handler(req, res) {
     for (const kw of kwList) {
       if (!kw) continue;
       
-      // 1. General search
-      const webResults = await unifiedSearch(`"${kw}" "${country}"`, 30);
+      // 1. General search (High depth)
+      const webResults = await unifiedSearch(`"${kw}" "${country}"`, 35);
       
-      // 2. Parallel social dorks for this keyword (smaller batches)
-      const platformKeys = Object.keys(PLATFORM_DOMAINS);
+      // 2. Parallel social dorks for this keyword (Strict targets)
+      const platformKeys = ["Facebook", "Instagram", "TikTok", "LinkedIn", "Twitter", "Telegram", "WhatsApp"];
       const chunks = Array.from({ length: Math.ceil(platformKeys.length / 3) }, (_, i) => platformKeys.slice(i * 3, i * 3 + 3));
       
       for (const chunk of chunks) {
-        const dorkTasks = chunk.map(p => unifiedSearch(`site:${PLATFORM_DOMAINS[p][0]} "${kw}"`, 10));
+        const dorkTasks = chunk.map(p => {
+          const domains = PLATFORM_DOMAINS[p];
+          // Mix of site: and keyword mapping
+          return unifiedSearch(`site:${domains[0]} "${kw}"`, 12);
+        });
         const platResults = await Promise.all(dorkTasks);
         
         platResults.forEach((list, idx) => {
@@ -126,15 +137,19 @@ export default async function handler(req, res) {
         });
       }
 
-      // Add web results to categories
+      // Add web results to categories by site mapping
       webResults.forEach(r => {
         if (seenUrls.has(r.href)) return;
         seenUrls.add(r.href);
-        const dom = new URL(r.href).hostname;
-        const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
-        if (platEntry) {
-          categories[platEntry[0]].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
-        } else {
+        try {
+          const dom = new URL(r.href).hostname.toLowerCase();
+          const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+          if (platEntry) {
+            categories[platEntry[0]].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+          } else {
+            categories.Web.push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+          }
+        } catch {
           categories.Web.push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
         }
       });
