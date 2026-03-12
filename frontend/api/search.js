@@ -55,32 +55,27 @@ export default async function handler(req, res) {
       const html = await resp.text();
       const results = [];
       
-      // More robust link extraction from Bing
-      const matches = html.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
+      // Liberal extraction: Capture link + title from b_algo blocks
+      const matches = html.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs);
       for (const m of matches) {
         const url = m[1];
         const title = m[2].replace(/<[^>]+>/g, "").trim();
-        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
         if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
-        results.push({ href: url, title, body: snippet });
+        results.push({ href: url, title, body: title });
       }
 
-      // Fallback regex if the complex one fails
+      // Broad fallback for any linked H2s
       if (results.length === 0) {
-        const simpleMatches = html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/g);
-        for (const m of simpleMatches) {
+        const fallbacks = html.matchAll(/<h2[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gs);
+        for (const m of fallbacks) {
           const url = m[1];
           const title = m[2].replace(/<[^>]+>/g, "").trim();
           if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
           results.push({ href: url, title, body: title });
         }
       }
-      
       return results.slice(0, maxResults);
-    } catch (e) {
-      console.error("Bing error:", e);
-      return [];
-    }
+    } catch (e) { return []; }
   }
 
   async function duckSearch(query, maxResults = 8) {
@@ -90,15 +85,16 @@ export default async function handler(req, res) {
       });
       const html = await resp.text();
       const results = [];
-      const matches = html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs);
+      const matches = html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs);
       for (const m of matches) {
         let url = m[1];
         if (url.includes("uddg=")) {
-           url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
+           const match = url.match(/uddg=([^&]+)/);
+           if (match) url = decodeURIComponent(match[1]);
         }
         const title = m[2].replace(/<[^>]+>/g, "").trim();
-        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
-        results.push({ href: url, title, body: snippet });
+        if (!url || url.includes("duckduckgo.com")) continue;
+        results.push({ href: url, title, body: title });
       }
       return results.slice(0, maxResults);
     } catch { return []; }
@@ -113,21 +109,26 @@ export default async function handler(req, res) {
     return res.slice(0, maxResults);
   }
 
-  async function translateText(text, lang) {
+  async function translateText(text, targetLang) {
     try {
-      const resp = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${lang}`);
+      const resp = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${targetLang}`);
       const data = await resp.json();
       return data?.responseData?.translatedText || text;
     } catch { return text; }
   }
 
   try {
-    const keywords = [keyword];
+    const keywordSet = new Set([keyword]);
     const lang = LANG_MAP[(country || "").toLowerCase().trim()];
     if (lang) {
-      const translated = await translateText(keyword, lang);
-      if (translated && translated !== keyword) keywords.push(translated);
+      const [en, local] = await Promise.all([
+        translateText(keyword, "en"),
+        translateText(keyword, lang)
+      ]);
+      if (en) keywordSet.add(en);
+      if (local) keywordSet.add(local);
     }
+    const keywords = Array.from(keywordSet);
 
     const entityMap = {};
 
