@@ -1,25 +1,26 @@
 /** 
- * OSINT Search API - High Reliability "Full Recovery" Version
- * Restores individual platform discovery and robust link extraction.
+ * OSINT Search API - Restored "High-Yield" Preferred Version
+ * Focuses on high-volume results and stable Vercel execution.
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+  
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { keyword, country } = req.body;
   if (!keyword) return res.status(400).json({ error: "keyword is required" });
 
-  const PLATFORMS = {
-    facebook: "facebook.com",
-    instagram: "instagram.com",
-    tiktok: "tiktok.com",
-    linkedin: "linkedin.com",
-    twitter: "twitter.com",
-    telegram: "t.me",
-    whatsapp: "wa.me"
+  const PLATFORM_DOMAINS = {
+    facebook: ["facebook.com", "fb.com"],
+    instagram: ["instagram.com"],
+    tiktok: ["tiktok.com"],
+    linkedin: ["linkedin.com"],
+    twitter: ["twitter.com", "x.com"],
+    telegram: ["t.me", "telegram.me"],
+    whatsapp: ["whatsapp.com", "wa.me"]
   };
 
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
@@ -33,47 +34,26 @@ export default async function handler(req, res) {
     } catch { return text; }
   }
 
-  async function betterSearch(query, limit = 15) {
+  async function unifiedSearch(query, limit = 20) {
     const results = [];
     try {
-      const endpoints = [
-        `https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=20`,
-        `https://www.bing.com/search?q=${encodeURIComponent(query)}`
-      ];
+      const [h1, h2] = await Promise.all([
+        fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=25`).then(r => r.text()).catch(() => ""),
+        fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
+          headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" }
+        }).then(r => r.text()).catch(() => "")
+      ]);
       
-      for (const url of endpoints) {
-        try {
-          const resp = await fetch(url, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
-          });
-          const html = await resp.text();
-          
-          // Pattern 1: Mojeek-style (ob class)
-          const m1 = html.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
-          for (const m of m1) {
-             results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), snippet: m[3].replace(/<[^>]+>/g, "") });
-          }
-          
-          // Pattern 2: Bing-style (h2 > a)
-          const m2 = html.matchAll(/<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
-          for (const m of m2) {
-             results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), snippet: m[3].replace(/<[^>]+>/g, "") });
-          }
-
-          // Pattern 3: Generic link fallback
-          if (results.length < 5) {
-             const m3 = html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gs);
-             for (const m of m3) {
-               const href = m[1];
-               const title = m[2].replace(/<[^>]+>/g, "").trim();
-               if (!href.includes("microsoft") && !href.includes("bing") && !href.includes("mojeek") && title.length > 5) {
-                 results.push({ href, title, snippet: "" });
-               }
-             }
-          }
-        } catch {}
+      const allHtml = h1 + h2;
+      const links = allHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs);
+      for (const m of links) {
+        const href = m[1];
+        const title = m[2].replace(/<[^>]+>/g, "").trim();
+        if (href.startsWith('http') && !href.includes("bing.com") && !href.includes("mojeek.com") && title.length > 3) {
+          results.push({ href: href, title: title, body: "" });
+        }
       }
-    } catch {}
+    } catch { }
     return results.slice(0, limit);
   }
 
@@ -85,60 +65,62 @@ export default async function handler(req, res) {
     if (local) kwSet.add(local);
 
     const entityMap = {};
-    const kwList = Array.from(kwSet);
+    const kwList = Array.from(kwSet).slice(0, 2);
 
-    // sequential batches to avoid Vercel timeouts but cover EVERYTHING
     for (const kw of kwList) {
-      // 1. Broadest Search (for website discovery)
-      const webResults = await betterSearch(`${kw} official website ${country !== 'Worldwide' ? country : ''}`, 20);
+      // 1. Core Web Search (Broad)
+      const baseQuery = country !== 'Worldwide' ? `"${kw}" ${country}` : `"${kw}"`;
+      const webResults = await unifiedSearch(baseQuery, 25);
       
-      // 2. Specific Platform Dorks (One by one in small bursts)
-      const platformTasks = Object.entries(PLATFORMS).map(([name, site]) => betterSearch(`site:${site} "${kw}"`, 8));
-      const platformResultsBatches = await Promise.all(platformTasks);
-      
-      const allFound = [...webResults, ...platformResultsBatches.flat()];
+      // 2. High-Yield Platform Batches
+      const platforms = Object.keys(PLATFORM_DOMAINS);
+      for (let i = 0; i < platforms.length; i += 3) {
+        const batch = platforms.slice(i, i + 3);
+        const batchQueries = batch.map(p => unifiedSearch(`site:${PLATFORM_DOMAINS[p][0]} "${kw}"`, 10));
+        const batchResults = (await Promise.all(batchQueries)).flat();
+        
+        [...webResults, ...batchResults].forEach(r => {
+          try {
+            const urlObj = new URL(r.href);
+            const dom = urlObj.hostname.replace("www.", "").toLowerCase();
+            const content = (r.title + " " + dom).toLowerCase();
+            
+            // Check relevance
+            if (!kwList.some(k => content.includes(k.toLowerCase()))) return;
 
-      allFound.forEach(r => {
-        try {
-          const urlObj = new URL(r.href);
-          const dom = urlObj.hostname.replace("www.", "").toLowerCase();
-          const content = (r.title + " " + r.snippet + " " + r.href).toLowerCase();
-          
-          // Relevance check: must contain keyword or its variations
-          if (!kwList.some(k => content.includes(k.toLowerCase()))) return;
+            const emails = [...new Set((r.title + " " + r.href).match(EMAIL_REGEX) || [])];
+            const phones = [...new Set(r.title.match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+            
+            const isPlat = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+            let entityId = dom;
+            if (isPlat) {
+              const parts = urlObj.pathname.split('/').filter(p => p.length > 1);
+              if (parts.length > 0) entityId = `${dom}/${parts[0]}`;
+            }
 
-          const emails = [...new Set(content.match(EMAIL_REGEX) || [])];
-          const phones = [...new Set(content.match(PHONE_REGEX) || [])].filter(p => p.length > 7);
-          
-          const platName = Object.keys(PLATFORMS).find(k => dom.includes(PLATFORMS[k]));
-          let entityId = dom;
-
-          // Unique profiles on social platforms
-          if (platName) {
-            const parts = urlObj.pathname.split('/').filter(x => x.length > 1);
-            if (parts.length > 0) entityId = `${dom}/${parts[0]}`;
-          }
-
-          if (!entityMap[entityId]) {
-            entityMap[entityId] = { 
-              name: r.title || dom, 
-              website: platName ? null : r.href,
-              snippet: r.snippet || "OSINT profile metadata identified.",
-              emails: [], phones: [], social_profiles: [], score: 0 
-            };
-          }
-
-          const ent = entityMap[entityId];
-          if (platName && !ent.social_profiles.find(p => p.url === r.href)) {
-            ent.social_profiles.push({ platform: platName, url: r.href });
-          }
-          if (emails.length) ent.emails = [...new Set([...ent.emails, ...emails])];
-          if (phones.length) ent.phones = [...new Set([...ent.phones, ...phones])];
-          
-          ent.score += 5;
-          if (r.title.toLowerCase().includes(keyword.toLowerCase())) ent.score += 10;
-        } catch {}
-      });
+            if (!entityMap[entityId]) {
+              entityMap[entityId] = { 
+                name: r.title || dom, 
+                website: isPlat ? null : r.href, 
+                snippet: "Discovered via deep OSINT crawl.", 
+                emails: [], phones: [], social_profiles: [], score: 0 
+              };
+            }
+            
+            const ent = entityMap[entityId];
+            if (isPlat) {
+              const [platform] = isPlat;
+              if (!ent.social_profiles.find(p => p.url === r.href)) {
+                ent.social_profiles.push({ platform, url: r.href });
+              }
+            }
+            if (emails.length) ent.emails = [...new Set([...ent.emails, ...emails])];
+            if (phones.length) ent.phones = [...new Set([...ent.phones, ...phones])];
+            
+            ent.score += (r.title.toLowerCase().includes(keyword.toLowerCase()) ? 10 : 2);
+          } catch {}
+        });
+      }
     }
 
     const final = Object.values(entityMap).filter(e => e.social_profiles.length > 0 || e.website || e.emails.length > 0 || e.phones.length > 0);
@@ -146,8 +128,8 @@ export default async function handler(req, res) {
 
     if (final.length === 0) {
       return res.status(200).json([{
-        name: `In-depth search for '${keyword}'`,
-        snippet: "Engines are responding slowly. Try a broader term or check back in 1 minute.",
+        name: `Results for '${keyword}'`,
+        snippet: "Searching all platforms... Try a broader keyword if no results appear.",
         social_profiles: [], emails: [], phones: [], website: "#"
       }]);
     }
