@@ -1,6 +1,6 @@
 /** 
- * OSINT Search API - Restored "High-Yield" Preferred Version
- * Focuses on high-volume results and stable Vercel execution.
+ * OSINT Search API - Industry-Specific Preferred Version
+ * Tailored for Chemical & Petrochemical sectors with High-Yield stability.
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -68,9 +68,18 @@ export default async function handler(req, res) {
     const kwList = Array.from(kwSet).slice(0, 2);
 
     for (const kw of kwList) {
-      // 1. Core Web Search (Broad)
+      // 1. Core Industry Web Search (Broad + Technical)
       const baseQuery = country !== 'Worldwide' ? `"${kw}" ${country}` : `"${kw}"`;
-      const webResults = await unifiedSearch(baseQuery, 25);
+      
+      // Execute Industry Specific Batches (SDS, CAS, B2B)
+      const industryTerms = ["Chemical supplier", "SDS TDS", "Petrochemical exporter", "CAS number", "industrial portal"];
+      const webTasks = [
+        unifiedSearch(baseQuery, 25),
+        unifiedSearch(`${baseQuery} ${industryTerms[0]}`, 15),
+        unifiedSearch(`${baseQuery} ${industryTerms[1]}`, 15)
+      ];
+      
+      const webResults = (await Promise.all(webTasks)).flat();
       
       // 2. High-Yield Platform Batches
       const platforms = Object.keys(PLATFORM_DOMAINS);
@@ -83,13 +92,14 @@ export default async function handler(req, res) {
           try {
             const urlObj = new URL(r.href);
             const dom = urlObj.hostname.replace("www.", "").toLowerCase();
-            const content = (r.title + " " + dom).toLowerCase();
+            const content = (r.title + " " + r.href).toLowerCase();
+            const fullContent = (r.title + " " + r.href).toLowerCase();
             
-            // Check relevance
-            if (!kwList.some(k => content.includes(k.toLowerCase()))) return;
+            // Relevance check
+            if (!kwList.some(k => fullContent.includes(k.toLowerCase()))) return;
 
-            const emails = [...new Set((r.title + " " + r.href).match(EMAIL_REGEX) || [])];
-            const phones = [...new Set(r.title.match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+            const emails = [...new Set(fullContent.match(EMAIL_REGEX) || [])];
+            const phones = [...new Set(fullContent.match(PHONE_REGEX) || [])].filter(p => p.length > 7);
             
             const isPlat = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
             let entityId = dom;
@@ -102,7 +112,7 @@ export default async function handler(req, res) {
               entityMap[entityId] = { 
                 name: r.title || dom, 
                 website: isPlat ? null : r.href, 
-                snippet: "Discovered via deep OSINT crawl.", 
+                snippet: "Industrial OSINT identity found.", 
                 emails: [], phones: [], social_profiles: [], score: 0 
               };
             }
@@ -117,6 +127,11 @@ export default async function handler(req, res) {
             if (emails.length) ent.emails = [...new Set([...ent.emails, ...emails])];
             if (phones.length) ent.phones = [...new Set([...ent.phones, ...phones])];
             
+            // Boost score for chemical technical terms
+            if (fullContent.includes("sds") || fullContent.includes("cas") || fullContent.includes("tds")) ent.score += 15;
+            if (fullContent.includes("chemical") || fullContent.includes("petro")) ent.score += 10;
+            if (fullContent.includes("supplier") || fullContent.includes("export")) ent.score += 8;
+
             ent.score += (r.title.toLowerCase().includes(keyword.toLowerCase()) ? 10 : 2);
           } catch {}
         });
@@ -128,8 +143,8 @@ export default async function handler(req, res) {
 
     if (final.length === 0) {
       return res.status(200).json([{
-        name: `Results for '${keyword}'`,
-        snippet: "Searching all platforms... Try a broader keyword if no results appear.",
+        name: `Petro-Chemical Results for '${keyword}'`,
+        snippet: "Industry search complete. Deep crawling specialized databases... try a technical term (e.g. CAS number).",
         social_profiles: [], emails: [], phones: [], website: "#"
       }]);
     }
