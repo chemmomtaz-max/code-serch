@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import './index.css';
-import EntityCard from './components/EntityCard';
+import ResultsDashboard from './components/ResultsDashboard';
 
 const COUNTRIES = [
   "Worldwide", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", "Burkina Faso", "Burundi", "Cabo Verde", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", "China", "Colombia", "Comoros", "Congo", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czechia", "Denmark", "Djibouti", "Dominica", "Dominican Republic", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Eswatini", "Ethiopia", "Fiji", "Finland", "France", "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", "India", "Indonesia", "Iran", "Iraq", "Ireland", "Israel", "Italy", "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Kiribati", "Korea (North)", "Korea (South)", "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Macedonia", "Norway", "Oman", "Pakistan", "Palau", "Palestine", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", "Timor-Leste", "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom", "United States", "Uruguay", "Uzbekistan", "Vanuatu", "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
@@ -10,7 +10,7 @@ function App() {
   const [keyword, setKeyword] = useState('');
   const [country, setCountry] = useState('Worldwide');
   const [loading, setLoading] = useState(false);
-  const [entities, setEntities] = useState(null);
+  const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
   const handleSearch = async (e) => {
@@ -35,7 +35,7 @@ function App() {
       const data = await res.json();
       
       if (res.ok) {
-        setEntities(data);
+        setResults(data);
       } else {
         setError(`Search request failed: ${data.detail || JSON.stringify(data)}`);
       }
@@ -91,16 +91,9 @@ function App() {
         </div>
       )}
 
-      {entities && !loading && (
-        <div>
-          <p className="results-count">{entities.length} entities found</p>
-          <div className="entities-grid">
-            {entities.length === 0 ? (
-              <div className="empty-state">No results found for this keyword and country.</div>
-            ) : (
-              entities.map((entity, idx) => <EntityCard key={idx} entity={entity} />)
-            )}
-          </div>
+      {results && !loading && (
+        <div className="results-wrapper animated-fade-in">
+           <ResultsDashboard results={results} />
         </div>
       )}
     </div>

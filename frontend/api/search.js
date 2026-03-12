@@ -1,6 +1,6 @@
 /** 
- * OSINT Search API - Massive Parallel Search & Resilience Version
- * Queries Mojeek, Bing, and Qwant in parallel with 15+ variations
+ * OSINT Search API - Categorized Multi-Platform Version
+ * Fires 15+ variations in parallel and returns data grouped by platform
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -19,31 +19,14 @@ export default async function handler(req, res) {
     "uae": "ar", "syria": "ar", "lebanon": "ar", "afghanistan": "fa", "india": "hi", "pakistan": "ur",
   };
 
-  const COUNTRY_INFO = {
-    "iran": { tld: ".ir", name: "ایران" },
-    "iraq": { tld: ".iq", name: "العراق" },
-    "germany": { tld: ".de", name: "Deutschland" },
-    "france": { tld: ".fr", name: "France" },
-    "spain": { tld: ".es", name: "España" },
-    "italy": { tld: ".it", name: "Italia" },
-    "russia": { tld: ".ru", name: "Россия" },
-    "china": { tld: ".cn", name: "中国" },
-    "japan": { tld: ".jp", name: "日本" },
-    "turkey": { tld: ".tr", name: "Türkiye" },
-    "brazil": { tld: ".br", name: "Brasil" },
-    "saudi arabia": { tld: ".sa", name: "السعودية" },
-    "egypt": { tld: ".eg", name: "مصر" },
-    "uae": { tld: ".ae", name: "الإمارات" },
-  };
-
   const PLATFORM_DOMAINS = {
-    facebook: ["facebook.com", "fb.com"],
-    instagram: ["instagram.com"],
-    tiktok: ["tiktok.com"],
-    linkedin: ["linkedin.com"],
-    twitter: ["twitter.com", "x.com"],
-    telegram: ["t.me", "telegram.me"],
-    whatsapp: ["whatsapp.com", "wa.me"],
+    Facebook: ["facebook.com", "fb.com"],
+    Instagram: ["instagram.com"],
+    TikTok: ["tiktok.com"],
+    LinkedIn: ["linkedin.com"],
+    Twitter: ["twitter.com", "x.com"],
+    Telegram: ["t.me", "telegram.me"],
+    WhatsApp: ["whatsapp.com", "wa.me"],
   };
 
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
@@ -82,122 +65,71 @@ export default async function handler(req, res) {
         searchQwant(query)
       ]);
       const [h1, h2] = await Promise.all([r1.text(), r2.text()]);
-      
       const m1 = h1.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
       for (const m of m1) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: m[3].replace(/<[^>]+>/g, "") });
-      
       const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
-      for (const m of m2) {
-        if (!m[1].includes("bing.com")) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: "" });
-      }
-      
+      for (const m of m2) if (!m[1].includes("bing.com")) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: "" });
       if (Array.isArray(r3)) results.push(...r3);
     } catch { }
-    
-    const unique = [];
-    const seen = new Set();
-    for (const r of results) {
-      if (!seen.has(r.href)) {
-        unique.push(r);
-        seen.add(r.href);
-      }
-    }
-    return unique.slice(0, limit);
+    return results.slice(0, limit);
   }
 
   try {
     const kwSet = new Set([keyword]);
     const lang = LANG_MAP[country.toLowerCase().trim()] || "en";
-    const cInfo = COUNTRY_INFO[country.toLowerCase().trim()] || {};
-
     const [en, local] = await Promise.all([translate(keyword, "en"), translate(keyword, lang)]);
-    if (en) kwSet.add(en);
-    if (local) kwSet.add(local);
+    kwSet.add(en); kwSet.add(local);
 
-    const entityMap = {};
+    const categories = {
+      Web: [], Facebook: [], Instagram: [], TikTok: [], LinkedIn: [], Twitter: [], Telegram: [], WhatsApp: []
+    };
     const searchTasks = [];
 
-    // OPTIMIZED SEARCH STRATEGY: High-relevance dorking
+    // Parallel Search variations
     for (const kw of kwSet) {
-      // 1. Broad global & country search
+      if (!kw) continue;
       searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 15));
-      
-      // 2. Platform-specific deep dorks
       Object.entries(PLATFORM_DOMAINS).forEach(([plat, ds]) => {
-        // Targeted dork: site:domain "keyword"
-        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 8));
-        // Informal dork: "keyword" platform_name
-        searchTasks.push(unifiedSearch(`"${kw}" ${plat} ${country}`, 5));
+        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 10));
       });
-
-      // 3. Local TLD & Contact dorks
-      if (cInfo.tld) searchTasks.push(unifiedSearch(`"${kw}" site:${cInfo.tld}`, 10));
-      searchTasks.push(unifiedSearch(`"${kw}" ${country} "contact" OR "phone" OR "email"`, 10));
-      searchTasks.push(unifiedSearch(`"${kw}" ${country} "WhatsApp" OR "Telegram"`, 10));
     }
 
-    const resultChunks = await Promise.all(searchTasks);
-    const allResults = resultChunks.flat();
+    const allResults = (await Promise.all(searchTasks)).flat();
+    const seenUrls = new Set();
 
     for (const r of allResults) {
-      try {
-        if (!r.href || !r.href.startsWith("http")) continue;
-        const urlObj = new URL(r.href);
-        const dom = urlObj.hostname.replace("www.", "");
-        
-        // Relevance Check: Title or Snippet must contain at least part of a keyword
-        const content = (r.title + " " + (r.body || "")).toLowerCase();
-        const kwRelevance = Array.from(kwSet).some(k => {
-          const kwLow = k.toLowerCase();
-          return content.includes(kwLow) || dom.includes(kwLow.replace(/\s+/g, ''));
-        });
-        
-        if (!kwRelevance) continue; // Skip non-relevant "fake" results
+      if (!r.href || seenUrls.has(r.href)) continue;
+      seenUrls.add(r.href);
 
-        const emails = [...new Set(((r.title + " " + (r.body || "") + " " + r.href).match(EMAIL_REGEX) || []).map(e => e.toLowerCase()))];
-        const phones = [...new Set((r.title + " " + (r.body || "")).match(PHONE_REGEX) || [])].filter(p => p.length > 8);
+      try {
+        const dom = new URL(r.href).hostname.replace("www.", "");
+        const emails = [...new Set((r.title + " " + r.body + " " + r.href).match(EMAIL_REGEX) || [])].map(e => e.toLowerCase());
+        const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 8);
         
-        const isSocial = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
-        
-        if (isSocial) {
-          const [platform] = isSocial;
-          if (!entityMap[dom]) entityMap[dom] = { name: r.title || dom, website: null, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
-          // For social results, we want to capture the specific profile URL
-          if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
-             entityMap[dom].social_profiles.push({ platform, url: r.href });
-          }
+        const resObj = { 
+          title: r.title, 
+          link: r.href, 
+          snippet: r.body, 
+          emails: emails, 
+          phones: phones 
+        };
+
+        const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+        if (platEntry) {
+          categories[platEntry[0]].push(resObj);
         } else {
-          // General website result
-          if (!entityMap[dom]) {
-            entityMap[dom] = { name: r.title, website: r.href, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
-          } else if (!entityMap[dom].website) {
-            entityMap[dom].website = r.href;
-            entityMap[dom].name = r.title;
-          }
+          categories.Web.push(resObj);
         }
-        
-        if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
-        if (phones.length) entityMap[dom].phones = [...new Set([...entityMap[dom].phones, ...phones])];
       } catch { }
     }
 
-    const final = Object.values(entityMap).filter(e => e.social_profiles.length > 0 || e.website || e.emails.length > 0 || e.phones.length > 0);
-    
-    final.sort((a, b) => {
-      const score = e => (e.social_profiles.length * 2) + (e.emails.length * 3) + (e.phones.length * 4) + (e.website ? 5 : 0);
-      return score(b) - score(a);
+    // Filter out empty categories
+    const finalResponse = {};
+    Object.entries(categories).forEach(([name, list]) => {
+      if (list.length > 0) finalResponse[name] = list.slice(0, 50);
     });
 
-    if (final.length === 0) {
-      return res.status(200).json([{
-        name: `Searching the entire web for ${keyword}...`,
-        website: "#",
-        snippet: "Processing deep data extraction. If no specific results show, the target may have restricted visibility.",
-        emails: [], phones: [], social_profiles: []
-      }]);
-    }
-
-    return res.status(200).json(final.slice(0, 80));
+    return res.status(200).json(finalResponse);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
