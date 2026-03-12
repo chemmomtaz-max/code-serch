@@ -44,77 +44,51 @@ export default async function handler(req, res) {
     try { return new URL(url).hostname.replace("www.", ""); } catch { return url; }
   }
 
-  async function bingSearch(query, maxResults = 8) {
-    try {
-      const resp = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${maxResults}`, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-      });
-      const html = await resp.text();
-      const results = [];
-      
-      // Liberal extraction: Capture link + title from b_algo blocks
-      const matches = html.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/gs);
-      for (const m of matches) {
-        const url = m[1];
-        const title = m[2].replace(/<[^>]+>/g, "").trim();
-        if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
-        results.push({ href: url, title, body: title });
-      }
-
-      // Broad fallback for any linked H2s
-      if (results.length === 0) {
-        const fallbacks = html.matchAll(/<h2[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gs);
-        for (const m of fallbacks) {
-          const url = m[1];
-          const title = m[2].replace(/<[^>]+>/g, "").trim();
-          if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
-          results.push({ href: url, title, body: title });
-        }
-      }
-      return results.slice(0, maxResults);
-    } catch (e) { return []; }
-  }
-
-  async function duckSearch(query, maxResults = 8) {
-    try {
-      const resp = await fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" }
-      });
-      const html = await resp.text();
-      const results = [];
-      const matches = html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs);
-      for (const m of matches) {
-        let url = m[1];
-        if (url.includes("uddg=")) {
-           const match = url.match(/uddg=([^&]+)/);
-           if (match) url = decodeURIComponent(match[1]);
-        }
-        const title = m[2].replace(/<[^>]+>/g, "").trim();
-        if (!url || url.includes("duckduckgo.com")) continue;
-        results.push({ href: url, title, body: title });
-      }
-      return results.slice(0, maxResults);
-    } catch { return []; }
-  }
-
-  async function unifiedSearch(query, maxResults = 8) {
-    let res = await bingSearch(query, maxResults);
-    if (res.length < 2) {
-      const dres = await duckSearch(query, maxResults);
-      res = [...res, ...dres];
-    }
-    return res.slice(0, maxResults);
-  }
-
   async function translateText(text, targetLang) {
     try {
       const resp = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${targetLang}`);
       const data = await resp.json();
       return data?.responseData?.translatedText || text;
     } catch { return text; }
+  }
+
+  async function searchEngine(query, maxResults = 8) {
+    try {
+      const url = `https://duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        },
+      });
+      const html = await resp.text();
+      const results = [];
+      const matches = html.matchAll(/<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<td[^>]*class="result-snippet"[^>]*>(.*?)<\/td>/gs);
+      for (const m of matches) {
+        let link = m[1];
+        if (link.includes("uddg=")) {
+          const match = link.match(/uddg=([^&]+)/);
+          if (match) link = decodeURIComponent(match[1]);
+        }
+        const title = m[2].replace(/<[^>]+>/g, "").trim();
+        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
+        if (link && !link.includes("duckduckgo.com")) {
+          results.push({ href: link, title, body: snippet });
+        }
+        if (results.length >= maxResults) break;
+      }
+      if (results.length === 0) {
+        const tableMatches = html.matchAll(/<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/g);
+        for (const m of tableMatches) {
+          let link = m[1];
+          if (link.startsWith("http") && !link.includes("duckduckgo.com")) {
+            const title = m[2].replace(/<[^>]+>/g, "").trim();
+            if (title.length > 5) results.push({ href: link, title, body: title });
+          }
+          if (results.length >= maxResults) break;
+        }
+      }
+      return results;
+    } catch (e) { return []; }
   }
 
   try {
@@ -129,15 +103,12 @@ export default async function handler(req, res) {
       if (local) keywordSet.add(local);
     }
     const keywords = Array.from(keywordSet);
-
     const entityMap = {};
 
     for (const kw of keywords) {
-      // General web search
-      const webResults = await unifiedSearch(kw, 10);
+      const webResults = await searchEngine(kw, 8);
       for (const r of webResults) {
         const { href: link, title, body: snippet } = r;
-        if (!link || !title) continue;
         const isSocial = Object.values(PLATFORM_DOMAINS).some(ds => ds.some(d => link.toLowerCase().includes(d)));
         if (isSocial) continue;
         const domain = getDomain(link);
@@ -147,14 +118,11 @@ export default async function handler(req, res) {
         }
         if (emails.length) entityMap[domain].emails = [...new Set([...entityMap[domain].emails, ...emails])];
       }
-
-      // Social platforms
       for (const [platform, siteOp] of Object.entries(PLATFORM_SITES)) {
         const domains = PLATFORM_DOMAINS[platform] || [];
-        const platResults = await unifiedSearch(`${siteOp} "${kw}"`, 5);
+        const platResults = await searchEngine(`${siteOp} "${kw}"`, 4);
         for (const r of platResults) {
           const { href: link, title, body: snippet } = r;
-          if (!link) continue;
           if (domains.length && !domains.some(d => link.toLowerCase().includes(d))) continue;
           const domain = getDomain(link);
           const emails = [...new Set((snippet + " " + title).match(EMAIL_REGEX) || [])];
@@ -169,9 +137,8 @@ export default async function handler(req, res) {
         }
       }
     }
-
-    const results = Object.values(entityMap).filter(e => e.website || e.social_profiles.length || e.emails.length);
-    return res.status(200).json(results.slice(0, 50));
+    const finalResults = Object.values(entityMap).filter(e => e.website || e.social_profiles.length || e.emails.length);
+    return res.status(200).json(finalResults.slice(0, 50));
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
