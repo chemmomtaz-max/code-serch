@@ -93,7 +93,7 @@ function App() {
 
       {results && !loading && (
         <div className="results-wrapper animated-fade-in">
-          <div className="entities-grid">
+          <div className="results-grid">
             {results.length > 0 ? (
               results.map((entity, i) => (
                 <EntityCard key={i} entity={entity} />

@@ -81,8 +81,16 @@ const EntityCard = ({ entity }) => {
       )}
 
       <div className="card-footer">
-        {website && <span className="link-text">{new URL(website).hostname}</span>}
-        {!website && social_profiles[0] && <span className="link-text">{new URL(social_profiles[0].url).hostname}</span>}
+        {website && website.startsWith('http') && (
+          <span className="link-text">
+            {(() => { try { return new URL(website).hostname; } catch { return 'website'; } })()}
+          </span>
+        )}
+        {!website && social_profiles[0] && (
+          <span className="link-text">
+            {(() => { try { return new URL(social_profiles[0].url).hostname; } catch { return 'social'; } })()}
+          </span>
+        )}
         <a href={website || (social_profiles[0]?.url)} target="_blank" rel="noopener noreferrer" className="visit-btn">Details ↗</a>
       </div>
     </div>
