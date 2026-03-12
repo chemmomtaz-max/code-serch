@@ -1,6 +1,6 @@
 /** 
- * OSINT Search API - High Reliability Categorized Version
- * Batches queries to handle Vercel limits and uses robust scrapers.
+ * OSINT Search API - High Reliability Entity-Centric Version
+ * Consolidated grouping by target entity (domain) as requested.
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -20,13 +20,13 @@ export default async function handler(req, res) {
   };
 
   const PLATFORM_DOMAINS = {
-    Facebook: ["facebook.com", "fb.com"],
-    Instagram: ["instagram.com"],
-    TikTok: ["tiktok.com"],
-    LinkedIn: ["linkedin.com"],
-    Twitter: ["twitter.com", "x.com"],
-    Telegram: ["t.me", "telegram.me"],
-    WhatsApp: ["whatsapp.com", "wa.me"],
+    facebook: ["facebook.com", "fb.com", "fb.me"],
+    instagram: ["instagram.com"],
+    tiktok: ["tiktok.com"],
+    linkedin: ["linkedin.com"],
+    twitter: ["twitter.com", "x.com"],
+    telegram: ["t.me", "telegram.me"],
+    whatsapp: ["whatsapp.com", "wa.me"],
   };
 
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
@@ -43,7 +43,6 @@ export default async function handler(req, res) {
   async function unifiedSearch(query, limit = 15) {
     const results = [];
     try {
-      // Use Mojeek, Bing Mobile, and DuckDuckGo Lite
       const [r1, r2, r3] = await Promise.all([
         fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=20`),
         fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
@@ -56,49 +55,24 @@ export default async function handler(req, res) {
       
       const [h1, h2, h3] = await Promise.all([r1.text(), r2.text(), r3.text()]);
       
-      // Mojeek scraper
+      // Mojeek
       const m1 = h1.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
       for (const m of m1) {
-        results.push({ 
-          href: m[1], 
-          title: m[2].replace(/<[^>]+>/g, "").replace(/^.*https?:\/\//, "").trim(),
-          body: m[3].replace(/<[^>]+>/g, "").trim() 
-        });
+        results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, "").trim(), body: m[3].replace(/<[^>]+>/g, "").trim() });
       }
 
-      // DuckDuckGo Lite scraper
+      // DDG
       const dMatches = h3.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs);
       for (const m of dMatches) {
         let url = m[1];
-        if (url.includes("uddg=")) {
-           url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
-        }
-        results.push({
-          href: url,
-          title: m[2].replace(/<[^>]+>/g, "").trim(),
-          body: m[3].replace(/<[^>]+>/g, "").trim()
-        });
+        if (url.includes("uddg=")) url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
+        results.push({ href: url, title: m[2].replace(/<[^>]+>/g, "").trim(), body: m[3].replace(/<[^>]+>/g, "").trim() });
       }
 
-      // Bing scraper
+      // Bing
       const bMatches = h2.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
       for (const m of bMatches) {
-        results.push({
-          href: m[1],
-          title: m[2].replace(/<[^>]+>/g, "").trim(),
-          body: m[3].replace(/<[^>]+>/g, "").trim()
-        });
-      }
-      
-      if (results.length < 5) {
-        const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
-        for (const m of m2) {
-          const url = m[1];
-          const title = m[2].replace(/<[^>]+>/g, "").trim();
-          if (!url.includes("bing.com") && title.length > 5) {
-            results.push({ href: url, title: title, body: "" });
-          }
-        }
+        results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, "").trim(), body: m[3].replace(/<[^>]+>/g, "").trim() });
       }
     } catch { }
     return results.slice(0, limit);
@@ -111,104 +85,78 @@ export default async function handler(req, res) {
     if (en) kwSet.add(en);
     if (local) kwSet.add(local);
 
-    const categories = {
-      Web: [], 
-      Facebook: [], 
-      Instagram: [], 
-      TikTok: [], 
-      LinkedIn: [], 
-      Twitter: [], 
-      Telegram: [], 
-      WhatsApp: []
-    };
-    const seenUrls = new Set();
-    const searchTasks = [];
-
-    // Strategy: Batch queries to keep Vercel happy
+    const entityMap = {};
     const kwList = Array.from(kwSet);
-    for (const kw of kwList) {
-      if (!kw) continue;
-      
-      // 1. General search (High depth)
-      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 20));
-      searchTasks.push(unifiedSearch(`"${kw}" official profile`, 15));
-      searchTasks.push(unifiedSearch(`#${kw.replace(/\s+/g, '')} ${country}`, 15)); // Hashtag search
-      
-      // 2. Parallel social dorks for this keyword (Strict targets)
-      const platformKeys = ["Facebook", "Instagram", "TikTok", "LinkedIn", "Twitter", "Telegram", "WhatsApp"];
-      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 3) }, (_, i) => platformKeys.slice(i * 3, i * 3 + 3));
-      
-      for (const chunk of chunks) {
-        const dorkTasks = [];
-        chunk.forEach(p => {
-          const domains = PLATFORM_DOMAINS[p];
-          // Use up to 2 domains per platform for dorking depth
-          domains.slice(0, 2).forEach(dom => {
-            dorkTasks.push(unifiedSearch(`site:${dom} "${kw}"`, 10));
-            dorkTasks.push(unifiedSearch(`site:${dom} #${kw.replace(/\s+/g, '')}`, 8));
-          });
-        });
-        
-        const platResults = await Promise.all(dorkTasks);
-        
-        // Flatten and categorize
-        let taskIdx = 0;
-        chunk.forEach(p => {
-          const domains = PLATFORM_DOMAINS[p];
-          domains.slice(0, 2).forEach(() => {
-            // Processing results from two tasks (exact and hashtag) per domain
-            [platResults[taskIdx++], platResults[taskIdx++]].forEach(list => {
-              if (!list) return;
-              list.forEach(r => {
-                if (seenUrls.has(r.href)) return;
-                const content = (r.title + " " + r.body).toLowerCase();
-                if (!kwList.some(k => content.includes(k.toLowerCase())) && !content.includes(country.toLowerCase())) return;
 
-                seenUrls.add(r.href);
-                categories[p].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
-              });
-            });
+    // Initial Search: Web + Broad Social
+    const searchTasks = [];
+    for (const kw of kwList) {
+      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 25));
+      searchTasks.push(unifiedSearch(`"${kw}" official contacts`, 15));
+      
+      // Platform Specific Dorking (Serialized batches to stay safe on Vercel)
+      const platforms = Object.keys(PLATFORM_DOMAINS);
+      for (let i = 0; i < platforms.length; i += 3) {
+        const batch = platforms.slice(i, i + 3);
+        const batchTasks = batch.map(p => unifiedSearch(`site:${PLATFORM_DOMAINS[p][0]} "${kw}"`, 10));
+        const batchResults = await Promise.all(batchTasks);
+        
+        batchResults.forEach(results => {
+          results.forEach(r => {
+            try {
+              const dom = new URL(r.href).hostname.replace("www.", "").toLowerCase();
+              const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+              const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+              
+              const isPlat = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+              
+              if (!entityMap[dom]) {
+                entityMap[dom] = { name: r.title, website: isPlat ? null : r.href, snippet: r.body, emails: [], phones: [], social_profiles: [] };
+              }
+              
+              if (isPlat) {
+                const [platform] = isPlat;
+                if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
+                  entityMap[dom].social_profiles.push({ platform, url: r.href });
+                }
+              }
+              
+              if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
+              if (phones.length) entityMap[dom].phones = [...new Set([...entityMap[dom].phones, ...phones])];
+            } catch {}
           });
         });
       }
-
-      // Add web results to categories by site mapping
-      const webBatches = await Promise.all(searchTasks);
-      webBatches.flat().forEach(r => {
-        if (!r.href || seenUrls.has(r.href)) return;
-        
-        const content = (r.title + " " + r.body).toLowerCase();
-        const isHighlyRelevant = kwList.some(k => content.includes(k.toLowerCase()));
-        if (!isHighlyRelevant && !content.includes(country.toLowerCase())) return; // Anti-Fake filter
-
-        seenUrls.add(r.href);
-        try {
-          const dom = new URL(r.href).hostname.toLowerCase();
-          const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
-          if (platEntry) {
-            categories[platEntry[0]].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
-          } else {
-            categories.Web.push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
-          }
-        } catch {
-          categories.Web.push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
-        }
-      });
     }
 
-    // 3. Contact extraction from ALL found results
-    Object.values(categories).flat().forEach(item => {
-      const text = `${item.title} ${item.snippet} ${item.link}`;
-      item.emails = [...new Set((text.match(EMAIL_REGEX) || []).map(e => e.toLowerCase()))];
-      item.phones = [...new Set((text.match(PHONE_REGEX) || []))].filter(p => p.length > 8);
+    // Process General Web batches
+    const webBatches = await Promise.all(searchTasks);
+    webBatches.flat().forEach(r => {
+      try {
+        const dom = new URL(r.href).hostname.replace("www.", "").toLowerCase();
+        const content = (r.title + " " + r.body).toLowerCase();
+        if (!kwList.some(k => content.includes(k.toLowerCase())) && !content.includes(country.toLowerCase())) return;
+
+        const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+        const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+        const isPlat = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+
+        if (!entityMap[dom]) {
+          entityMap[dom] = { name: r.title, website: isPlat ? null : r.href, snippet: r.body, emails: [], phones: [], social_profiles: [] };
+        }
+        if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
+        if (phones.length) entityMap[dom].phones = [...new Set([...entityMap[dom].phones, ...phones])];
+      } catch {}
     });
 
-    const finalResponse = {};
-    Object.entries(categories).forEach(([name, list]) => {
-      if (list.length > 0) finalResponse[name] = list.slice(0, 50);
+    // Cleanup and Sorting
+    const final = Object.values(entityMap).filter(e => e.social_profiles.length > 0 || e.website || e.emails.length > 0 || e.phones.length > 0);
+    final.sort((a, b) => {
+      const score = x => (x.social_profiles.length * 2) + (x.emails.length * 3) + (x.phones.length * 4) + (x.website ? 1 : 0);
+      return score(b) - score(a);
     });
 
-    return res.status(200).json(finalResponse);
+    return res.status(200).json(final.slice(0, 80));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
