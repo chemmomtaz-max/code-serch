@@ -48,26 +48,69 @@ export default async function handler(req, res) {
     try {
       const resp = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${maxResults}`, {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
           "Accept-Language": "en-US,en;q=0.9",
         },
       });
       const html = await resp.text();
       const results = [];
-      // Extract organic results
-      const linkMatches = html.matchAll(/<a href="(https?:\/\/[^"]+)"[^>]*><h2[^>]*>([^<]+)<\/h2>/g);
-      for (const m of linkMatches) {
+      
+      // More robust link extraction from Bing
+      const matches = html.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
+      for (const m of matches) {
         const url = m[1];
-        const title = m[2].trim();
+        const title = m[2].replace(/<[^>]+>/g, "").trim();
+        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
         if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
-        results.push({ href: url, title, body: title });
-        if (results.length >= maxResults) break;
+        results.push({ href: url, title, body: snippet });
       }
-      return results;
+
+      // Fallback regex if the complex one fails
+      if (results.length === 0) {
+        const simpleMatches = html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>.*?<h2[^>]*>(.*?)<\/h2>/g);
+        for (const m of simpleMatches) {
+          const url = m[1];
+          const title = m[2].replace(/<[^>]+>/g, "").trim();
+          if (!url || url.includes("bing.com") || url.includes("microsoft.com")) continue;
+          results.push({ href: url, title, body: title });
+        }
+      }
+      
+      return results.slice(0, maxResults);
     } catch (e) {
       console.error("Bing error:", e);
       return [];
     }
+  }
+
+  async function duckSearch(query, maxResults = 8) {
+    try {
+      const resp = await fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" }
+      });
+      const html = await resp.text();
+      const results = [];
+      const matches = html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs);
+      for (const m of matches) {
+        let url = m[1];
+        if (url.includes("uddg=")) {
+           url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
+        }
+        const title = m[2].replace(/<[^>]+>/g, "").trim();
+        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
+        results.push({ href: url, title, body: snippet });
+      }
+      return results.slice(0, maxResults);
+    } catch { return []; }
+  }
+
+  async function unifiedSearch(query, maxResults = 8) {
+    let res = await bingSearch(query, maxResults);
+    if (res.length < 2) {
+      const dres = await duckSearch(query, maxResults);
+      res = [...res, ...dres];
+    }
+    return res.slice(0, maxResults);
   }
 
   async function translateText(text, lang) {
@@ -90,7 +133,7 @@ export default async function handler(req, res) {
 
     for (const kw of keywords) {
       // General web search
-      const webResults = await bingSearch(kw, 10);
+      const webResults = await unifiedSearch(kw, 10);
       for (const r of webResults) {
         const { href: link, title, body: snippet } = r;
         if (!link || !title) continue;
@@ -107,7 +150,7 @@ export default async function handler(req, res) {
       // Social platforms
       for (const [platform, siteOp] of Object.entries(PLATFORM_SITES)) {
         const domains = PLATFORM_DOMAINS[platform] || [];
-        const platResults = await bingSearch(`${siteOp} "${kw}"`, 5);
+        const platResults = await unifiedSearch(`${siteOp} "${kw}"`, 5);
         for (const r of platResults) {
           const { href: link, title, body: snippet } = r;
           if (!link) continue;
