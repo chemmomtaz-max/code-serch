@@ -5,6 +5,7 @@ const PLATFORM_COLORS = {
   linkedin:  { bg: '#0a66c2', label: 'LinkedIn' },
   telegram:  { bg: '#0088cc', label: 'Telegram' },
   whatsapp:  { bg: '#25d366', label: 'WhatsApp' },
+  twitter:   { bg: '#1da1f2', label: 'Twitter' },
 };
 
 const PLATFORM_ICONS = {
@@ -14,6 +15,7 @@ const PLATFORM_ICONS = {
   linkedin:  '💼',
   telegram:  '✈️',
   whatsapp:  '💬',
+  twitter:   '🐦',
 };
 
 const EntityCard = ({ entity }) => {

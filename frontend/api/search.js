@@ -24,11 +24,23 @@ export default async function handler(req, res) {
     instagram: "instagram.com",
     tiktok: "tiktok.com",
     linkedin: "linkedin.com",
+    twitter: "twitter.com",
     telegram: "t.me",
     whatsapp: "wa.me"
   };
 
+  const PLATFORM_DOMAINS = {
+    facebook: ["facebook.com", "fb.com"],
+    instagram: ["instagram.com"],
+    tiktok: ["tiktok.com"],
+    linkedin: ["linkedin.com"],
+    twitter: ["twitter.com", "x.com"],
+    telegram: ["t.me", "telegram.me"],
+    whatsapp: ["whatsapp.com", "wa.me"],
+  };
+
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
+  const PHONE_REGEX = /(\+?\d{1,4}[\s-]?)?(\(?\d{3}\)?[\s-]?)?\d{3}[\s-]?\d{4,9}/g;
 
   async function translate(text, target) {
     try {
@@ -105,9 +117,10 @@ export default async function handler(req, res) {
       for (const r of allWeb) {
         try {
           const dom = new URL(r.href).hostname.replace("www.", "");
-          const isPlat = Object.values(PLATFORMS).some(p => dom.includes(p));
+          const isPlat = Object.values(PLATFORM_DOMAINS).some(ds => ds.some(d => dom.includes(d)));
+          
           if (isPlat) {
-             const plat = Object.keys(PLATFORMS).find(k => dom.includes(PLATFORMS[k]));
+             const plat = Object.keys(PLATFORM_DOMAINS).find(k => PLATFORM_DOMAINS[k].some(d => dom.includes(d)));
              if (!entityMap[dom]) entityMap[dom] = { name: r.title || dom, website: null, snippet: "", emails: [], phones: [], social_profiles: [] };
              if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
                entityMap[dom].social_profiles.push({ platform: plat, url: r.href });
@@ -116,21 +129,28 @@ export default async function handler(req, res) {
              if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: r.href, snippet: r.body, emails: [], phones: [], social_profiles: [] };
           }
           const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+          const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])];
           if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
+          if (phones.length) entityMap[dom].phones = [...new Set([...entityMap[dom].phones, ...phones])];
         } catch { }
       }
 
       // 2. High-intensity social search
       for (const [plat, site] of Object.entries(PLATFORMS)) {
         const query = `site:${site} "${kw}"`;
-        const socialResults = await searchMojeek(query); // Mojeek is best for robots
+        const socialResults = await searchMojeek(query); 
         for (const r of socialResults) {
           try {
             const dom = new URL(r.href).hostname.replace("www.", "");
+            const emails = [...new Set((r.title + " " + r.body).match(EMAIL_REGEX) || [])];
+            const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])];
+            
             if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: null, snippet: "", emails: [], phones: [], social_profiles: [] };
             if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
               entityMap[dom].social_profiles.push({ platform: plat, url: r.href });
             }
+            if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
+            if (phones.length) entityMap[dom].phones = [...new Set([...entityMap[dom].phones, ...phones])];
           } catch { }
         }
       }
