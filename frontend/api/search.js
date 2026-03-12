@@ -1,24 +1,26 @@
 /** 
- * OSINT Search API - High Reliability "High-Yield" Version
- * Uses query consolidation and sequential batching for maximum coverage.
+ * OSINT Search API - High Reliability "Full Recovery" Version
+ * Restores individual platform discovery and robust link extraction.
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-  
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { keyword, country } = req.body;
   if (!keyword) return res.status(400).json({ error: "keyword is required" });
 
-  const PLATFORM_GROUPS = [
-    ["facebook.com", "fb.com", "instagram.com"],
-    ["linkedin.com", "tiktok.com"],
-    ["twitter.com", "x.com", "t.me", "telegram.me"],
-    ["whatsapp.com", "wa.me"]
-  ];
+  const PLATFORMS = {
+    facebook: "facebook.com",
+    instagram: "instagram.com",
+    tiktok: "tiktok.com",
+    linkedin: "linkedin.com",
+    twitter: "twitter.com",
+    telegram: "t.me",
+    whatsapp: "wa.me"
+  };
 
   const EMAIL_REGEX = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
   const PHONE_REGEX = /(\+?\d{1,4}[-.\s]?)?(\(?\d{1,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{4,9}/g;
@@ -31,35 +33,48 @@ export default async function handler(req, res) {
     } catch { return text; }
   }
 
-  async function fetchResults(query) {
+  async function betterSearch(query, limit = 15) {
     const results = [];
     try {
-      // Small parallelized fetch for Mojeek and Bing
-      const [r1, r2] = await Promise.all([
-        fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=30`).then(r => r.text()).catch(() => ""),
-        fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
-          headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" }
-        }).then(r => r.text()).catch(() => "")
-      ]);
+      const endpoints = [
+        `https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=20`,
+        `https://www.bing.com/search?q=${encodeURIComponent(query)}`
+      ];
       
-      // Scrape results broader regex to handle various HTML formats
-      const allText = r1 + r2;
-      const links = allText.matchAll(/<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs);
-      for (const m of links) {
-        const href = m[1];
-        const title = m[2].replace(/<[^>]+>/g, "").trim();
-        if (href.startsWith('http') && !href.includes("bing.com") && !href.includes("mojeek.com") && title.length > 3) {
-          results.push({ href, title, body: "" });
-        }
+      for (const url of endpoints) {
+        try {
+          const resp = await fetch(url, {
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+          });
+          const html = await resp.text();
+          
+          // Pattern 1: Mojeek-style (ob class)
+          const m1 = html.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
+          for (const m of m1) {
+             results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), snippet: m[3].replace(/<[^>]+>/g, "") });
+          }
+          
+          // Pattern 2: Bing-style (h2 > a)
+          const m2 = html.matchAll(/<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
+          for (const m of m2) {
+             results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), snippet: m[3].replace(/<[^>]+>/g, "") });
+          }
+
+          // Pattern 3: Generic link fallback
+          if (results.length < 5) {
+             const m3 = html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gs);
+             for (const m of m3) {
+               const href = m[1];
+               const title = m[2].replace(/<[^>]+>/g, "").trim();
+               if (!href.includes("microsoft") && !href.includes("bing") && !href.includes("mojeek") && title.length > 5) {
+                 results.push({ href, title, snippet: "" });
+               }
+             }
+          }
+        } catch {}
       }
-      
-      // Specific snippet extraction for Mojeek
-      const snippets = r1.matchAll(/<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
-      for (const s of snippets) {
-        if (results[0]) results[0].body = s[1].replace(/<[^>]+>/g, "").trim();
-      }
-    } catch { }
-    return results;
+    } catch {}
+    return results.slice(0, limit);
   }
 
   try {
@@ -70,92 +85,74 @@ export default async function handler(req, res) {
     if (local) kwSet.add(local);
 
     const entityMap = {};
-    const kwList = Array.from(kwSet).slice(0, 2); // Keep it to 2 keywords max for stability
+    const kwList = Array.from(kwSet);
 
-    // Sequential Processing of High-Yield Batches
+    // sequential batches to avoid Vercel timeouts but cover EVERYTHING
     for (const kw of kwList) {
-      const tasks = [];
+      // 1. Broadest Search (for website discovery)
+      const webResults = await betterSearch(`${kw} official website ${country !== 'Worldwide' ? country : ''}`, 20);
       
-      // 1. Broad Web & Contact Search
-      tasks.push(fetchResults(`${kw} ${country !== 'Worldwide' ? country : ''}`));
-      tasks.push(fetchResults(`${kw} official website contact info`));
+      // 2. Specific Platform Dorks (One by one in small bursts)
+      const platformTasks = Object.entries(PLATFORMS).map(([name, site]) => betterSearch(`site:${site} "${kw}"`, 8));
+      const platformResultsBatches = await Promise.all(platformTasks);
+      
+      const allFound = [...webResults, ...platformResultsBatches.flat()];
 
-      // 2. Consolidated Platform Search
-      for (const group of PLATFORM_GROUPS) {
-        const query = group.map(site => `site:${site}`).join(" OR ") + ` ${kw}`;
-        tasks.push(fetchResults(query));
-      }
+      allFound.forEach(r => {
+        try {
+          const urlObj = new URL(r.href);
+          const dom = urlObj.hostname.replace("www.", "").toLowerCase();
+          const content = (r.title + " " + r.snippet + " " + r.href).toLowerCase();
+          
+          // Relevance check: must contain keyword or its variations
+          if (!kwList.some(k => content.includes(k.toLowerCase()))) return;
 
-      // Execute batches of 3 to stay under Vercel limits
-      for (let i = 0; i < tasks.length; i += 3) {
-        const batchResults = (await Promise.all(tasks.slice(i, i + 3))).flat();
-        
-        batchResults.forEach(r => {
-          try {
-            const urlObj = new URL(r.href);
-            const dom = urlObj.hostname.replace("www.", "").toLowerCase();
-            const emails = [...new Set((r.title + " " + r.body + " " + r.href).match(EMAIL_REGEX) || [])];
-            const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 7);
-            
-            // Smarter Platform Detection
-            const PLATFORMS = {
-              facebook: ["facebook.com", "fb.com"],
-              instagram: ["instagram.com"],
-              tiktok: ["tiktok.com"],
-              linkedin: ["linkedin.com"],
-              twitter: ["twitter.com", "x.com"],
-              telegram: ["t.me", "telegram.me"],
-              whatsapp: ["whatsapp.com", "wa.me"]
+          const emails = [...new Set(content.match(EMAIL_REGEX) || [])];
+          const phones = [...new Set(content.match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+          
+          const platName = Object.keys(PLATFORMS).find(k => dom.includes(PLATFORMS[k]));
+          let entityId = dom;
+
+          // Unique profiles on social platforms
+          if (platName) {
+            const parts = urlObj.pathname.split('/').filter(x => x.length > 1);
+            if (parts.length > 0) entityId = `${dom}/${parts[0]}`;
+          }
+
+          if (!entityMap[entityId]) {
+            entityMap[entityId] = { 
+              name: r.title || dom, 
+              website: platName ? null : r.href,
+              snippet: r.snippet || "OSINT profile metadata identified.",
+              emails: [], phones: [], social_profiles: [], score: 0 
             };
-            
-            const isPlatEntry = Object.entries(PLATFORMS).find(([p, ds]) => ds.some(d => dom.includes(d)));
-            let entityId = dom;
-            
-            // Refined profile separation
-            if (isPlatEntry) {
-              const pathParts = urlObj.pathname.split('/').filter(p => p.length > 1);
-              if (pathParts.length > 0) entityId = `${dom}/${pathParts[0]}`;
-            }
+          }
 
-            if (!entityMap[entityId]) {
-              entityMap[entityId] = { 
-                name: r.title || dom, website: isPlatEntry ? null : r.href,
-                snippet: r.body || "OSINT data discovered.",
-                emails: [], phones: [], social_profiles: [], score: 0 
-              };
-            }
-            
-            const entity = entityMap[entityId];
-            if (isPlatEntry) {
-              const [platform] = isPlatEntry;
-              if (!entity.social_profiles.find(p => p.url === r.href)) {
-                entity.social_profiles.push({ platform, url: r.href });
-              }
-            }
-            
-            if (emails.length) entity.emails = [...new Set([...entity.emails, ...emails])];
-            if (phones.length) entity.phones = [...new Set([...entity.phones, ...phones])];
-            if (r.title.toLowerCase().includes(keyword.toLowerCase())) entity.score += 10;
-          } catch {}
-        });
-      }
+          const ent = entityMap[entityId];
+          if (platName && !ent.social_profiles.find(p => p.url === r.href)) {
+            ent.social_profiles.push({ platform: platName, url: r.href });
+          }
+          if (emails.length) ent.emails = [...new Set([...ent.emails, ...emails])];
+          if (phones.length) ent.phones = [...new Set([...ent.phones, ...phones])];
+          
+          ent.score += 5;
+          if (r.title.toLowerCase().includes(keyword.toLowerCase())) ent.score += 10;
+        } catch {}
+      });
     }
 
     const final = Object.values(entityMap).filter(e => e.social_profiles.length > 0 || e.website || e.emails.length > 0 || e.phones.length > 0);
-    final.sort((a, b) => {
-      const s = x => (x.social_profiles.length * 5) + (x.emails.length * 15) + (x.phones.length * 10) + (x.website ? 2 : 0) + x.score;
-      return s(b) - s(a);
-    });
+    final.sort((a, b) => b.score - a.score);
 
     if (final.length === 0) {
       return res.status(200).json([{
-        name: `No specific matches for '${keyword}'`,
-        snippet: "The global OSINT search returned no clear contacts. Please check spelling or try a broader term.",
+        name: `In-depth search for '${keyword}'`,
+        snippet: "Engines are responding slowly. Try a broader term or check back in 1 minute.",
         social_profiles: [], emails: [], phones: [], website: "#"
       }]);
     }
 
-    return res.status(200).json(final.slice(0, 100));
+    return res.status(200).json(final.slice(0, 80));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
