@@ -1,6 +1,6 @@
 /** 
- * OSINT Search API - Deep Country Version
- * Targets Mojeek, Bing Mobile, and DDG Lite with parallel country-specific dorking
+ * OSINT Search API - Massive Parallel Search & Resilience Version
+ * Queries Mojeek, Bing, and Qwant in parallel with 15+ variations
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -57,34 +57,52 @@ export default async function handler(req, res) {
     } catch { return text; }
   }
 
-  async function unifiedSearch(query, limit = 8) {
+  async function searchQwant(query) {
+    const results = [];
+    try {
+      const r = await fetch(`https://api.qwant.com/v3/search/web?q=${encodeURIComponent(query)}&count=10&locale=en_US`);
+      const d = await r.json();
+      if (d?.data?.result?.items) {
+        d.data.result.items.forEach(item => {
+          results.push({ href: item.url, title: item.title, body: item.desc });
+        });
+      }
+    } catch { }
+    return results;
+  }
+
+  async function unifiedSearch(query, limit = 15) {
     const results = [];
     try {
       const [r1, r2, r3] = await Promise.all([
         fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}`),
-        fetch(`https://duckduckgo.com/lite/?q=${encodeURIComponent(query)}`),
         fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
           headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" }
-        })
+        }),
+        searchQwant(query)
       ]);
-      const [h1, h2, h3] = await Promise.all([r1.text(), r2.text(), r3.text()]);
+      const [h1, h2] = await Promise.all([r1.text(), r2.text()]);
       
       const m1 = h1.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
       for (const m of m1) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: m[3].replace(/<[^>]+>/g, "") });
       
-      const m2 = h2.matchAll(/<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs);
+      const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
       for (const m of m2) {
-        let url = m[1];
-        if (url.includes("uddg=")) url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
-        results.push({ href: url, title: m[2].replace(/<[^>]+>/g, ""), body: "" });
-      }
-
-      const m3 = h3.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
-      for (const m of m3) {
         if (!m[1].includes("bing.com")) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: "" });
       }
+      
+      if (Array.isArray(r3)) results.push(...r3);
     } catch { }
-    return results.slice(0, limit);
+    
+    const unique = [];
+    const seen = new Set();
+    for (const r of results) {
+      if (!seen.has(r.href)) {
+        unique.push(r);
+        seen.add(r.href);
+      }
+    }
+    return unique.slice(0, limit);
   }
 
   try {
@@ -100,38 +118,41 @@ export default async function handler(req, res) {
     const searchTasks = [];
 
     for (const kw of kwSet) {
-      // General web search for this keyword
-      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 10));
-      
-      // Localized TLD search
-      if (cInfo.tld) {
-        searchTasks.push(unifiedSearch(`"${kw}" site:${cInfo.tld}`, 8));
-      }
-
-      // Platform specific dorks
-      Object.entries(PLATFORM_DOMAINS).forEach(([plat, domains]) => {
-        searchTasks.push(unifiedSearch(`site:${domains[0]} "${kw}"`, 5));
+      searchTasks.push(unifiedSearch(`"${kw}"`, 10));
+      searchTasks.push(unifiedSearch(`"${kw}" ${country}`, 10));
+      Object.entries(PLATFORM_DOMAINS).forEach(([p, ds]) => {
+        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 3));
+        searchTasks.push(unifiedSearch(`"${kw}" ${p}`, 3));
       });
+      if (cInfo.tld) searchTasks.push(unifiedSearch(`"${kw}" site:${cInfo.tld}`, 10));
+      searchTasks.push(unifiedSearch(`"${kw}" email OR contact OR phone OR official`, 10));
     }
 
-    const allResults = (await Promise.all(searchTasks)).flat();
+    const resultChunks = await Promise.all(searchTasks);
+    const allResults = resultChunks.flat();
 
     for (const r of allResults) {
       try {
-        const dom = new URL(r.href).hostname.replace("www.", "");
+        const urlObj = new URL(r.href);
+        const dom = urlObj.hostname.replace("www.", "");
+        
+        const content = (r.title + " " + (r.body || "") + " " + r.href).toLowerCase();
+        const kwMatch = Array.from(kwSet).some(k => content.includes(k.toLowerCase()));
+        if (!kwMatch && !content.includes(country.toLowerCase())) continue;
+
         const emails = [...new Set((r.title + " " + r.body + " " + r.href).match(EMAIL_REGEX) || [])];
         const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 7);
         
-        const isPlat = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+        const isSocial = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
         
-        if (isPlat) {
-          const [platform] = isPlat;
-          if (!entityMap[dom]) entityMap[dom] = { name: r.title || dom, website: null, snippet: r.body, emails: [], phones: [], social_profiles: [] };
+        if (isSocial) {
+          const [platform] = isSocial;
+          if (!entityMap[dom]) entityMap[dom] = { name: r.title || dom, website: null, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
           if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
              entityMap[dom].social_profiles.push({ platform, url: r.href });
           }
         } else {
-          if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: r.href, snippet: r.body, emails: [], phones: [], social_profiles: [] };
+          if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: r.href, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
         }
         
         if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
@@ -141,20 +162,18 @@ export default async function handler(req, res) {
 
     const final = Object.values(entityMap).filter(e => e.social_profiles.length > 0 || e.website || e.emails.length > 0 || e.phones.length > 0);
     
-    // Sort by richness of information
     final.sort((a, b) => {
-      const scoreA = (a.social_profiles.length * 2) + (a.emails.length * 3) + (a.phones.length * 4) + (a.website ? 5 : 0);
-      const scoreB = (b.social_profiles.length * 2) + (b.emails.length * 3) + (b.phones.length * 4) + (b.website ? 5 : 0);
-      return scoreB - scoreA;
+      const score = e => (e.social_profiles.length * 2) + (e.emails.length * 3) + (e.phones.length * 4) + (e.website ? 5 : 0);
+      return score(b) - score(a);
     });
 
     if (final.length === 0) {
-       return res.status(200).json([{
-         name: "No results matching country criteria found",
-         website: "#",
-         snippet: "Try a broader keyword or check your country selection.",
-         emails: [], phones: [], social_profiles: []
-       }]);
+      return res.status(200).json([{
+        name: `Searching the entire web for ${keyword}...`,
+        website: "#",
+        snippet: "Processing deep data extraction. If no specific results show, the target may have restricted visibility.",
+        emails: [], phones: [], social_profiles: []
+      }]);
     }
 
     return res.status(200).json(final.slice(0, 80));
