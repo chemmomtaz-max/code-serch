@@ -31,14 +31,16 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keyword, country: searchCountry }),
       });
+      
+      const data = await res.json();
+      
       if (res.ok) {
-        const data = await res.json();
         setEntities(data);
       } else {
-        setError('Search request failed.');
+        setError(`Search request failed: ${data.detail || JSON.stringify(data)}`);
       }
     } catch (err) {
-      setError('Could not connect to backend. Make sure the server is running.');
+      setError(`Could not connect to backend: ${err.message}`);
     } finally {
       setLoading(false);
     }
