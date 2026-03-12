@@ -1,6 +1,6 @@
 /** 
- * OSINT Search API - Categorized Multi-Platform Version
- * Fires 15+ variations in parallel and returns data grouped by platform
+ * OSINT Search API - High Reliability Categorized Version
+ * Batches queries to handle Vercel limits and uses robust scrapers.
  */
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -40,36 +40,50 @@ export default async function handler(req, res) {
     } catch { return text; }
   }
 
-  async function searchQwant(query) {
-    const results = [];
-    try {
-      const r = await fetch(`https://api.qwant.com/v3/search/web?q=${encodeURIComponent(query)}&count=10&locale=en_US`);
-      const d = await r.json();
-      if (d?.data?.result?.items) {
-        d.data.result.items.forEach(item => {
-          results.push({ href: item.url, title: item.title, body: item.desc });
-        });
-      }
-    } catch { }
-    return results;
-  }
-
   async function unifiedSearch(query, limit = 15) {
     const results = [];
     try {
-      const [r1, r2, r3] = await Promise.all([
-        fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}`),
+      // Use Mojeek and Bing Mobile with better link extraction
+      const [r1, r2] = await Promise.all([
+        fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=20`),
         fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
           headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" }
-        }),
-        searchQwant(query)
+        })
       ]);
+      
       const [h1, h2] = await Promise.all([r1.text(), r2.text()]);
+      
+      // Mojeek scraper
       const m1 = h1.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
-      for (const m of m1) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: m[3].replace(/<[^>]+>/g, "") });
-      const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
-      for (const m of m2) if (!m[1].includes("bing.com")) results.push({ href: m[1], title: m[2].replace(/<[^>]+>/g, ""), body: "" });
-      if (Array.isArray(r3)) results.push(...r3);
+      for (const m of m1) {
+        results.push({ 
+          href: m[1], 
+          title: m[2].replace(/<[^>]+>/g, "").replace(/^.*https?:\/\//, "").trim(), // Strip prefix
+          body: m[3].replace(/<[^>]+>/g, "").trim() 
+        });
+      }
+
+      // Bing scraper - look for result items more specifically
+      const bMatches = h2.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)<\/p>/gs);
+      for (const m of bMatches) {
+        results.push({
+          href: m[1],
+          title: m[2].replace(/<[^>]+>/g, "").trim(),
+          body: m[3].replace(/<[^>]+>/g, "").trim()
+        });
+      }
+      
+      // Fallback Bing link extraction if specific items not found
+      if (results.length < 5) {
+        const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
+        for (const m of m2) {
+          const url = m[1];
+          const title = m[2].replace(/<[^>]+>/g, "").trim();
+          if (!url.includes("bing.com") && !url.includes("microsoft.com") && title.length > 5) {
+            results.push({ href: url, title: title, body: "" });
+          }
+        }
+      }
     } catch { }
     return results.slice(0, limit);
   }
@@ -78,52 +92,61 @@ export default async function handler(req, res) {
     const kwSet = new Set([keyword]);
     const lang = LANG_MAP[country.toLowerCase().trim()] || "en";
     const [en, local] = await Promise.all([translate(keyword, "en"), translate(keyword, lang)]);
-    kwSet.add(en); kwSet.add(local);
+    if (en) kwSet.add(en);
+    if (local) kwSet.add(local);
 
     const categories = {
       Web: [], Facebook: [], Instagram: [], TikTok: [], LinkedIn: [], Twitter: [], Telegram: [], WhatsApp: []
     };
-    const searchTasks = [];
+    const seenUrls = new Set();
 
-    // Parallel Search variations
-    for (const kw of kwSet) {
+    // Strategy: Batch queries to keep Vercel happy
+    const kwList = Array.from(kwSet);
+    for (const kw of kwList) {
       if (!kw) continue;
-      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 15));
-      Object.entries(PLATFORM_DOMAINS).forEach(([plat, ds]) => {
-        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 10));
+      
+      // 1. General search
+      const webResults = await unifiedSearch(`"${kw}" "${country}"`, 30);
+      
+      // 2. Parallel social dorks for this keyword (smaller batches)
+      const platformKeys = Object.keys(PLATFORM_DOMAINS);
+      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 3) }, (_, i) => platformKeys.slice(i * 3, i * 3 + 3));
+      
+      for (const chunk of chunks) {
+        const dorkTasks = chunk.map(p => unifiedSearch(`site:${PLATFORM_DOMAINS[p][0]} "${kw}"`, 10));
+        const platResults = await Promise.all(dorkTasks);
+        
+        platResults.forEach((list, idx) => {
+          const platName = chunk[idx];
+          list.forEach(r => {
+            if (seenUrls.has(r.href)) return;
+            seenUrls.add(r.href);
+            categories[platName].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+          });
+        });
+      }
+
+      // Add web results to categories
+      webResults.forEach(r => {
+        if (seenUrls.has(r.href)) return;
+        seenUrls.add(r.href);
+        const dom = new URL(r.href).hostname;
+        const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
+        if (platEntry) {
+          categories[platEntry[0]].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+        } else {
+          categories.Web.push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+        }
       });
     }
 
-    const allResults = (await Promise.all(searchTasks)).flat();
-    const seenUrls = new Set();
+    // 3. Contact extraction from ALL found results
+    Object.values(categories).flat().forEach(item => {
+      const text = `${item.title} ${item.snippet} ${item.link}`;
+      item.emails = [...new Set((text.match(EMAIL_REGEX) || []).map(e => e.toLowerCase()))];
+      item.phones = [...new Set((text.match(PHONE_REGEX) || []))].filter(p => p.length > 8);
+    });
 
-    for (const r of allResults) {
-      if (!r.href || seenUrls.has(r.href)) continue;
-      seenUrls.add(r.href);
-
-      try {
-        const dom = new URL(r.href).hostname.replace("www.", "");
-        const emails = [...new Set((r.title + " " + r.body + " " + r.href).match(EMAIL_REGEX) || [])].map(e => e.toLowerCase());
-        const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 8);
-        
-        const resObj = { 
-          title: r.title, 
-          link: r.href, 
-          snippet: r.body, 
-          emails: emails, 
-          phones: phones 
-        };
-
-        const platEntry = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
-        if (platEntry) {
-          categories[platEntry[0]].push(resObj);
-        } else {
-          categories.Web.push(resObj);
-        }
-      } catch { }
-    }
-
-    // Filter out empty categories
     const finalResponse = {};
     Object.entries(categories).forEach(([name, list]) => {
       if (list.length > 0) finalResponse[name] = list.slice(0, 50);
