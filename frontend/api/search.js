@@ -43,28 +43,45 @@ export default async function handler(req, res) {
   async function unifiedSearch(query, limit = 15) {
     const results = [];
     try {
-      // Use Mojeek and Bing Mobile with better link extraction
-      const [r1, r2] = await Promise.all([
+      // Use Mojeek, Bing Mobile, and DuckDuckGo Lite
+      const [r1, r2, r3] = await Promise.all([
         fetch(`https://www.mojeek.com/search?q=${encodeURIComponent(query)}&count=20`),
         fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
           headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" }
+        }),
+        fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" }
         })
       ]);
       
-      const [h1, h2] = await Promise.all([r1.text(), r2.text()]);
+      const [h1, h2, h3] = await Promise.all([r1.text(), r2.text(), r3.text()]);
       
       // Mojeek scraper
       const m1 = h1.matchAll(/<a[^>]*class="ob"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<p[^>]*class="s"[^>]*>(.*?)<\/p>/gs);
       for (const m of m1) {
         results.push({ 
           href: m[1], 
-          title: m[2].replace(/<[^>]+>/g, "").replace(/^.*https?:\/\//, "").trim(), // Strip prefix
+          title: m[2].replace(/<[^>]+>/g, "").replace(/^.*https?:\/\//, "").trim(),
           body: m[3].replace(/<[^>]+>/g, "").trim() 
         });
       }
 
-      // Bing scraper - look for result items more specifically
-      const bMatches = h2.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)<\/p>/gs);
+      // DuckDuckGo Lite scraper
+      const dMatches = h3.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gs);
+      for (const m of dMatches) {
+        let url = m[1];
+        if (url.includes("uddg=")) {
+           url = decodeURIComponent(url.split("uddg=")[1].split("&")[0]);
+        }
+        results.push({
+          href: url,
+          title: m[2].replace(/<[^>]+>/g, "").trim(),
+          body: m[3].replace(/<[^>]+>/g, "").trim()
+        });
+      }
+
+      // Bing scraper
+      const bMatches = h2.matchAll(/<li[^>]*class="b_algo"[^>]*>.*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>.*?<p[^>]*>(.*?)<\/p>/gs);
       for (const m of bMatches) {
         results.push({
           href: m[1],
@@ -73,13 +90,12 @@ export default async function handler(req, res) {
         });
       }
       
-      // Fallback Bing link extraction if specific items not found
       if (results.length < 5) {
         const m2 = h2.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/g);
         for (const m of m2) {
           const url = m[1];
           const title = m[2].replace(/<[^>]+>/g, "").trim();
-          if (!url.includes("bing.com") && !url.includes("microsoft.com") && title.length > 5) {
+          if (!url.includes("bing.com") && title.length > 5) {
             results.push({ href: url, title: title, body: "" });
           }
         }
@@ -119,27 +135,38 @@ export default async function handler(req, res) {
       
       // 2. Parallel social dorks for this keyword (Strict targets)
       const platformKeys = ["Facebook", "Instagram", "TikTok", "LinkedIn", "Twitter", "Telegram", "WhatsApp"];
-      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 4) }, (_, i) => platformKeys.slice(i * 4, i * 4 + 4));
+      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 3) }, (_, i) => platformKeys.slice(i * 3, i * 3 + 3));
       
       for (const chunk of chunks) {
-        const dorkTasks = chunk.map(p => {
+        const dorkTasks = [];
+        chunk.forEach(p => {
           const domains = PLATFORM_DOMAINS[p];
-          return unifiedSearch(`site:${domains[0]} "${kw}" OR #${kw.replace(/\s+/g, '')}`, 12);
+          // Use up to 2 domains per platform for dorking depth
+          domains.slice(0, 2).forEach(dom => {
+            dorkTasks.push(unifiedSearch(`site:${dom} "${kw}"`, 10));
+            dorkTasks.push(unifiedSearch(`site:${dom} #${kw.replace(/\s+/g, '')}`, 8));
+          });
         });
+        
         const platResults = await Promise.all(dorkTasks);
         
-        platResults.forEach((list, idx) => {
-          const platName = chunk[idx];
-          list.forEach(r => {
-            if (seenUrls.has(r.href)) return;
-            
-            // Relevance Scoring: Must contain keyword or country context
-            const content = (r.title + " " + r.body).toLowerCase();
-            const score = kwList.some(k => content.includes(k.toLowerCase())) ? 2 : 0;
-            if (score < 1 && !content.includes(country.toLowerCase())) return; // Filter unrelated
+        // Flatten and categorize
+        let taskIdx = 0;
+        chunk.forEach(p => {
+          const domains = PLATFORM_DOMAINS[p];
+          domains.slice(0, 2).forEach(() => {
+            // Processing results from two tasks (exact and hashtag) per domain
+            [platResults[taskIdx++], platResults[taskIdx++]].forEach(list => {
+              if (!list) return;
+              list.forEach(r => {
+                if (seenUrls.has(r.href)) return;
+                const content = (r.title + " " + r.body).toLowerCase();
+                if (!kwList.some(k => content.includes(k.toLowerCase())) && !content.includes(country.toLowerCase())) return;
 
-            seenUrls.add(r.href);
-            categories[platName].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+                seenUrls.add(r.href);
+                categories[p].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
+              });
+            });
           });
         });
       }
