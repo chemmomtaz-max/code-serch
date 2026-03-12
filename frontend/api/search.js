@@ -113,17 +113,18 @@ export default async function handler(req, res) {
       if (!kw) continue;
       
       // 1. General search (High depth)
-      const webResults = await unifiedSearch(`"${kw}" "${country}"`, 35);
+      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 20));
+      searchTasks.push(unifiedSearch(`"${kw}" official profile`, 15));
+      searchTasks.push(unifiedSearch(`#${kw.replace(/\s+/g, '')} ${country}`, 15)); // Hashtag search
       
       // 2. Parallel social dorks for this keyword (Strict targets)
       const platformKeys = ["Facebook", "Instagram", "TikTok", "LinkedIn", "Twitter", "Telegram", "WhatsApp"];
-      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 3) }, (_, i) => platformKeys.slice(i * 3, i * 3 + 3));
+      const chunks = Array.from({ length: Math.ceil(platformKeys.length / 4) }, (_, i) => platformKeys.slice(i * 4, i * 4 + 4));
       
       for (const chunk of chunks) {
         const dorkTasks = chunk.map(p => {
           const domains = PLATFORM_DOMAINS[p];
-          // Mix of site: and keyword mapping
-          return unifiedSearch(`site:${domains[0]} "${kw}"`, 12);
+          return unifiedSearch(`site:${domains[0]} "${kw}" OR #${kw.replace(/\s+/g, '')}`, 12);
         });
         const platResults = await Promise.all(dorkTasks);
         
@@ -131,6 +132,12 @@ export default async function handler(req, res) {
           const platName = chunk[idx];
           list.forEach(r => {
             if (seenUrls.has(r.href)) return;
+            
+            // Relevance Scoring: Must contain keyword or country context
+            const content = (r.title + " " + r.body).toLowerCase();
+            const score = kwList.some(k => content.includes(k.toLowerCase())) ? 2 : 0;
+            if (score < 1 && !content.includes(country.toLowerCase())) return; // Filter unrelated
+
             seenUrls.add(r.href);
             categories[platName].push({ title: r.title, link: r.href, snippet: r.body, emails: [], phones: [] });
           });
@@ -138,8 +145,14 @@ export default async function handler(req, res) {
       }
 
       // Add web results to categories by site mapping
-      webResults.forEach(r => {
-        if (seenUrls.has(r.href)) return;
+      const webBatches = await Promise.all(searchTasks);
+      webBatches.flat().forEach(r => {
+        if (!r.href || seenUrls.has(r.href)) return;
+        
+        const content = (r.title + " " + r.body).toLowerCase();
+        const isHighlyRelevant = kwList.some(k => content.includes(k.toLowerCase()));
+        if (!isHighlyRelevant && !content.includes(country.toLowerCase())) return; // Anti-Fake filter
+
         seenUrls.add(r.href);
         try {
           const dom = new URL(r.href).hostname.toLowerCase();
