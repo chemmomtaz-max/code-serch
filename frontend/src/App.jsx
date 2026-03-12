@@ -21,7 +21,12 @@ function App() {
     const searchCountry = country === 'Worldwide' ? '' : country;
 
     try {
-      const res = await fetch('http://localhost:8000/api/search', {
+      // Use relative path for Vercel production, absolute for local dev
+      const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+        ? 'http://localhost:8000/api/search' 
+        : '/api/search';
+
+      const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keyword, country: searchCountry }),
