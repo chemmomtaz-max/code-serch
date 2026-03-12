@@ -117,15 +117,23 @@ export default async function handler(req, res) {
     const entityMap = {};
     const searchTasks = [];
 
+    // OPTIMIZED SEARCH STRATEGY: High-relevance dorking
     for (const kw of kwSet) {
-      searchTasks.push(unifiedSearch(`"${kw}"`, 10));
-      searchTasks.push(unifiedSearch(`"${kw}" ${country}`, 10));
-      Object.entries(PLATFORM_DOMAINS).forEach(([p, ds]) => {
-        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 3));
-        searchTasks.push(unifiedSearch(`"${kw}" ${p}`, 3));
+      // 1. Broad global & country search
+      searchTasks.push(unifiedSearch(`"${kw}" "${country}"`, 15));
+      
+      // 2. Platform-specific deep dorks
+      Object.entries(PLATFORM_DOMAINS).forEach(([plat, ds]) => {
+        // Targeted dork: site:domain "keyword"
+        searchTasks.push(unifiedSearch(`site:${ds[0]} "${kw}"`, 8));
+        // Informal dork: "keyword" platform_name
+        searchTasks.push(unifiedSearch(`"${kw}" ${plat} ${country}`, 5));
       });
+
+      // 3. Local TLD & Contact dorks
       if (cInfo.tld) searchTasks.push(unifiedSearch(`"${kw}" site:${cInfo.tld}`, 10));
-      searchTasks.push(unifiedSearch(`"${kw}" email OR contact OR phone OR official`, 10));
+      searchTasks.push(unifiedSearch(`"${kw}" ${country} "contact" OR "phone" OR "email"`, 10));
+      searchTasks.push(unifiedSearch(`"${kw}" ${country} "WhatsApp" OR "Telegram"`, 10));
     }
 
     const resultChunks = await Promise.all(searchTasks);
@@ -133,26 +141,39 @@ export default async function handler(req, res) {
 
     for (const r of allResults) {
       try {
+        if (!r.href || !r.href.startsWith("http")) continue;
         const urlObj = new URL(r.href);
         const dom = urlObj.hostname.replace("www.", "");
         
-        const content = (r.title + " " + (r.body || "") + " " + r.href).toLowerCase();
-        const kwMatch = Array.from(kwSet).some(k => content.includes(k.toLowerCase()));
-        if (!kwMatch && !content.includes(country.toLowerCase())) continue;
+        // Relevance Check: Title or Snippet must contain at least part of a keyword
+        const content = (r.title + " " + (r.body || "")).toLowerCase();
+        const kwRelevance = Array.from(kwSet).some(k => {
+          const kwLow = k.toLowerCase();
+          return content.includes(kwLow) || dom.includes(kwLow.replace(/\s+/g, ''));
+        });
+        
+        if (!kwRelevance) continue; // Skip non-relevant "fake" results
 
-        const emails = [...new Set((r.title + " " + r.body + " " + r.href).match(EMAIL_REGEX) || [])];
-        const phones = [...new Set((r.title + " " + r.body).match(PHONE_REGEX) || [])].filter(p => p.length > 7);
+        const emails = [...new Set(((r.title + " " + (r.body || "") + " " + r.href).match(EMAIL_REGEX) || []).map(e => e.toLowerCase()))];
+        const phones = [...new Set((r.title + " " + (r.body || "")).match(PHONE_REGEX) || [])].filter(p => p.length > 8);
         
         const isSocial = Object.entries(PLATFORM_DOMAINS).find(([p, ds]) => ds.some(d => dom.includes(d)));
         
         if (isSocial) {
           const [platform] = isSocial;
           if (!entityMap[dom]) entityMap[dom] = { name: r.title || dom, website: null, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
+          // For social results, we want to capture the specific profile URL
           if (!entityMap[dom].social_profiles.find(p => p.url === r.href)) {
              entityMap[dom].social_profiles.push({ platform, url: r.href });
           }
         } else {
-          if (!entityMap[dom]) entityMap[dom] = { name: r.title, website: r.href, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
+          // General website result
+          if (!entityMap[dom]) {
+            entityMap[dom] = { name: r.title, website: r.href, snippet: r.body || "", emails: [], phones: [], social_profiles: [] };
+          } else if (!entityMap[dom].website) {
+            entityMap[dom].website = r.href;
+            entityMap[dom].name = r.title;
+          }
         }
         
         if (emails.length) entityMap[dom].emails = [...new Set([...entityMap[dom].emails, ...emails])];
