@@ -1,3 +1,4 @@
+/** Vercel Production API - Final Deployment Trigger **/
 export default async function handler(req, res) {
   // Allow CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
