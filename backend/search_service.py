@@ -1,12 +1,11 @@
 import re
-from ddgs import DDGS
+import requests
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional, Set
-from deep_translator import GoogleTranslator
+from typing import List, Optional, Dict
 
 # ---- Regex ----
 email_regex = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
-phone_regex = re.compile(r'(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}')
+phone_regex = re.compile(r'(?:\+?\d{1,3}[-.\\s]?)?(?:\(?\d{2,4}\)?[-.\\s]?)?\d{3,4}[-.\\s]?\d{3,4}')
 
 # ---- Pydantic Models ----
 class SocialProfile(BaseModel):
@@ -26,14 +25,11 @@ COUNTRY_LANG_MAP = {
     "iran": "fa", "iraq": "ar", "germany": "de", "france": "fr",
     "spain": "es", "italy": "it", "russia": "ru", "china": "zh-CN",
     "japan": "ja", "korea (south)": "ko", "turkey": "tr", "brazil": "pt",
-    "portugal": "pt", "saudi arabia": "ar", "egypt": "ar",
-    "united arab emirates": "ar", "syria": "ar", "lebanon": "ar",
-    "jordan": "ar", "kuwait": "ar", "qatar": "ar", "bahrain": "ar",
-    "oman": "ar", "yemen": "ar", "morocco": "ar", "algeria": "ar",
-    "tunisia": "ar", "afghanistan": "fa", "pakistan": "ur",
-    "india": "hi", "indonesia": "id", "malaysia": "ms",
-    "vietnam": "vi", "thailand": "th", "ukraine": "uk", "poland": "pl",
-    "greece": "el", "netherlands": "nl", "sweden": "sv",
+    "saudi arabia": "ar", "egypt": "ar", "united arab emirates": "ar", "syria": "ar",
+    "lebanon": "ar", "jordan": "ar", "kuwait": "ar", "qatar": "ar",
+    "afghanistan": "fa", "pakistan": "ur", "india": "hi",
+    "indonesia": "id", "malaysia": "ms", "vietnam": "vi", "thailand": "th",
+    "ukraine": "uk", "poland": "pl", "netherlands": "nl", "sweden": "sv",
 }
 
 PLATFORM_SITES = {
@@ -42,26 +38,21 @@ PLATFORM_SITES = {
     "tiktok":    "site:tiktok.com",
     "linkedin":  "site:linkedin.com",
     "telegram":  "site:t.me",
-    "whatsapp":  "site:wa.me OR site:chat.whatsapp.com",
+    "whatsapp":  "site:wa.me",
 }
 
 PLATFORM_DOMAINS = {
     "facebook":  ["facebook.com", "fb.com", "fb.me"],
-    "instagram": ["instagram.com", "instagr.am"],
+    "instagram": ["instagram.com"],
     "tiktok":    ["tiktok.com"],
     "linkedin":  ["linkedin.com"],
-    "telegram":  ["t.me", "telegram.me", "telegram.org"],
+    "telegram":  ["t.me", "telegram.me"],
     "whatsapp":  ["whatsapp.com", "wa.me"],
 }
 
-PLATFORM_ICONS = {
-    "facebook": "🔵",
-    "instagram": "📸",
-    "tiktok": "🎵",
-    "linkedin": "💼",
-    "telegram": "✈️",
-    "whatsapp": "💬",
-    "website": "🌐",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 def extract_contacts(text: str):
@@ -69,120 +60,155 @@ def extract_contacts(text: str):
     phones = list(set(phone_regex.findall(text)))
     return emails, phones
 
-
 def get_domain(url: str) -> str:
     try:
         from urllib.parse import urlparse
-        parsed = urlparse(url)
-        domain = parsed.netloc.replace("www.", "")
-        return domain
+        return urlparse(url).netloc.replace("www.", "")
     except Exception:
         return url
 
+def ddg_search(query: str, max_results: int = 10) -> List[Dict]:
+    """Search DuckDuckGo using their free HTML API."""
+    try:
+        response = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": 1, "no_redirect": 1, "kl": "us-en"},
+            headers=HEADERS,
+            timeout=15
+        )
+        data = response.json()
+        results = []
+
+        # Check RelatedTopics
+        for item in data.get("RelatedTopics", []):
+            if isinstance(item, dict):
+                url = item.get("FirstURL", "")
+                text = item.get("Text", "")
+                if url and text:
+                    results.append({"href": url, "title": text[:80], "body": text})
+
+        # Supplement with Bing scraper if needed
+        if len(results) < 3:
+            bing_results = bing_search(query, max_results)
+            results.extend(bing_results)
+
+        return results[:max_results]
+    except Exception as e:
+        print(f"DDG search error: {e}")
+        return bing_search(query, max_results)
+
+def bing_search(query: str, max_results: int = 10) -> List[Dict]:
+    """Fallback: Search using Bing."""
+    try:
+        resp = requests.get(
+            "https://www.bing.com/search",
+            params={"q": query, "count": max_results},
+            headers=HEADERS,
+            timeout=15
+        )
+        matches = re.findall(
+            r'<a href="(https?://[^"]+?)"[^>]*><h2[^>]*>(.*?)</h2>',
+            resp.text
+        )
+        results = []
+        for url, title in matches:
+            title_clean = re.sub(r'<[^>]+>', '', title).strip()
+            if title_clean and "bing.com" not in url and "microsoft.com" not in url:
+                results.append({"href": url, "title": title_clean, "body": title_clean})
+        return results[:max_results]
+    except Exception as e:
+        print(f"Bing search error: {e}")
+        return []
+
+def translate_with_mymemory(text: str, target_lang: str) -> str:
+    """Free translation using MyMemory API (no key required)."""
+    try:
+        resp = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text, "langpair": f"auto|{target_lang}"},
+            timeout=10
+        )
+        return resp.json()["responseData"]["translatedText"] or text
+    except Exception:
+        return text
 
 class OSINTSearcher:
-    def __init__(self):
-        self.ddgs = DDGS()
-
-    def _translate(self, keyword: str, dest: str) -> str:
-        try:
-            return GoogleTranslator(source="auto", target=dest).translate(keyword) or keyword
-        except Exception:
-            return keyword
-
     def _get_all_keywords(self, keyword: str, country: str) -> List[str]:
         keywords = set([keyword])
-        en = self._translate(keyword, "en")
-        if en: keywords.add(en)
-        lang = COUNTRY_LANG_MAP.get(country.lower().strip(), "en")
-        if lang != "en":
-            local = self._translate(keyword, lang)
-            if local: keywords.add(local)
+        try:
+            en = translate_with_mymemory(keyword, "en")
+            if en and en != keyword:
+                keywords.add(en)
+        except Exception:
+            pass
+        lang = COUNTRY_LANG_MAP.get(country.lower().strip(), "")
+        if lang and lang != "en":
+            try:
+                local = translate_with_mymemory(keyword, lang)
+                if local and local != keyword:
+                    keywords.add(local)
+            except Exception:
+                pass
         return list(keywords)
 
-    def _search_platform(self, keyword: str, platform: str, max_results: int) -> List[Dict]:
-        site_op = PLATFORM_SITES.get(platform, "")
-        domains = PLATFORM_DOMAINS.get(platform, [])
-        query = f'{site_op} {keyword}'.strip()
-        results = []
-        try:
-            raw = list(self.ddgs.text(query, max_results=max_results))
-            for r in raw:
-                link = r.get("href", "")
-                if not link:
-                    continue
-                if domains and not any(d in link.lower() for d in domains):
-                    continue
-                results.append({
-                    "title": r.get("title", ""),
-                    "link": link,
-                    "snippet": r.get("body", ""),
-                    "platform": platform,
-                })
-        except Exception as e:
-            print(f"  Error [{platform}]: {e}")
-        return results
-
-    def search_entities(self, keyword: str, country: str, max_results_per_platform: int = 15) -> List[EntityCard]:
+    def search_entities(self, keyword: str, country: str, max_results_per_platform: int = 10) -> List[EntityCard]:
         all_keywords = self._get_all_keywords(keyword, country)
         print(f"Searching with keywords: {all_keywords}")
 
-        # Collect all raw results from all platforms
         entity_map: Dict[str, EntityCard] = {}
 
-        platforms = list(PLATFORM_SITES.keys())
-
         for kw in all_keywords:
-            # General web search (for website + contacts)
+            # General web search
             try:
-                web_results = list(self.ddgs.text(kw, max_results=max_results_per_platform))
+                web_results = ddg_search(kw, max_results=max_results_per_platform)
                 for r in web_results:
                     link = r.get("href", "")
                     title = r.get("title", "").strip()
                     snippet = r.get("body", "")
                     if not link or not title:
                         continue
-                    domain = get_domain(link)
-                    # Skip social media from general results
                     if any(d in link.lower() for plat_domains in PLATFORM_DOMAINS.values() for d in plat_domains):
                         continue
-                    emails, phones = extract_contacts(f"{title} {snippet}")
-                    key = domain
-                    if key not in entity_map:
-                        entity_map[key] = EntityCard(name=title, website=link, snippet=snippet)
-                    if emails:
-                        entity_map[key].emails = list(set(entity_map[key].emails + emails))
-                    if phones:
-                        entity_map[key].phones = list(set(entity_map[key].phones + phones))
-            except Exception as e:
-                print(f"  Web search error: {e}")
-
-            # Social media searches
-            for platform in platforms:
-                raw = self._search_platform(kw, platform, max_results_per_platform)
-                for r in raw:
-                    link = r["link"]
-                    title = r["title"].strip()
-                    snippet = r["snippet"]
                     domain = get_domain(link)
                     emails, phones = extract_contacts(f"{title} {snippet}")
-
-                    # Key by domain
-                    key = domain
-                    if key not in entity_map:
-                        entity_map[key] = EntityCard(name=title, snippet=snippet)
-
-                    # Add social profile if not already there
-                    existing_urls = [p.url for p in entity_map[key].social_profiles]
-                    if link not in existing_urls:
-                        entity_map[key].social_profiles.append(
-                            SocialProfile(platform=platform, url=link)
-                        )
+                    if domain not in entity_map:
+                        entity_map[domain] = EntityCard(name=title, website=link, snippet=snippet)
                     if emails:
-                        entity_map[key].emails = list(set(entity_map[key].emails + emails))
+                        entity_map[domain].emails = list(set(entity_map[domain].emails + emails))
                     if phones:
-                        entity_map[key].phones = list(set(entity_map[key].phones + phones))
+                        entity_map[domain].phones = list(set(entity_map[domain].phones + phones))
+            except Exception as e:
+                print(f"Web search error: {e}")
 
-        # Return only entities that have at least one piece of useful contact/social info
+            # Social media searches
+            for platform, site_op in PLATFORM_SITES.items():
+                domains = PLATFORM_DOMAINS.get(platform, [])
+                query = f'{site_op} "{kw}"'
+                try:
+                    raw = ddg_search(query, max_results=max_results_per_platform)
+                    for r in raw:
+                        link = r.get("href", "")
+                        title = r.get("title", "").strip()
+                        snippet = r.get("body", "")
+                        if not link:
+                            continue
+                        if domains and not any(d in link.lower() for d in domains):
+                            continue
+                        domain = get_domain(link)
+                        emails, phones = extract_contacts(f"{title} {snippet}")
+                        if domain not in entity_map:
+                            entity_map[domain] = EntityCard(name=title, snippet=snippet)
+                        existing_urls = [p.url for p in entity_map[domain].social_profiles]
+                        if link not in existing_urls:
+                            entity_map[domain].social_profiles.append(
+                                SocialProfile(platform=platform, url=link)
+                            )
+                        if emails:
+                            entity_map[domain].emails = list(set(entity_map[domain].emails + emails))
+                        if phones:
+                            entity_map[domain].phones = list(set(entity_map[domain].phones + phones))
+                except Exception as e:
+                    print(f"Platform [{platform}] error: {e}")
+
         results = [e for e in entity_map.values() if e.website or e.social_profiles or e.emails or e.phones]
-        return results[:80]
+        return results[:60]
