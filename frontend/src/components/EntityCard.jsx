@@ -1,3 +1,4 @@
+const PLATFORM_COLORS = {
   facebook:  { bg: '#1877f2', label: 'Facebook' },
   instagram: { bg: '#e4405f', label: 'Instagram' },
   tiktok:    { bg: '#000000', label: 'TikTok' },
